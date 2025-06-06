@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shackett_utils"
+version = "0.1.0"
+description = "Personal utility functions for blog posts and applications"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    {name = "Sean Hackett", email = "seanmchackett@gmail.com"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "pandas"
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7.0", "pytest-cov"]
+data = ["numpy"]
+genomics = ["anndata", "mudata", "muon", "scanpy"]
+statistics = ["scipy", "statsmodels"]
+viz = ["matplotlib", "seaborn"]
+all = [
+    # test dependencies
+    "pytest>=7.0",
+    "pytest-cov",
+    # data dependencies
+    "numpy",
+    # genomics dependencies
+    "anndata",
+    "mudata",
+    "muon",
+    "scanpy",
+    # statistics dependencies
+    "scipy",
+    "statsmodels",
+    # visualization dependencies
+    "matplotlib",
+    "seaborn"
+]
+
+[project.urls]
+Homepage = "https://github.com/shackett/shackett-utils"
+Repository = "https://github.com/shackett/shackett-utils"
+
+[tool.setuptools.packages.find]
+where = ["src"]
