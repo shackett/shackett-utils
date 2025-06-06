@@ -38,13 +38,23 @@ def _calculate_residual_stats(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[st
 class StatisticalModel(ABC):
     """Abstract base class for statistical models with broom-like interface"""
     
-    def __init__(self):
+    def __init__(self, feature_name: Optional[str] = None, model_name: Optional[str] = None):
         self.fitted_model = None
         self.formula = None
         self.data = None
-        self.feature_names = None
+        self.feature_name = feature_name  # Name of the feature being modeled
+        self.model_name = model_name  # Name of the model type/variant
+        self.term_names = None
         self._X = None
         self._y = None
+    
+    def _add_identifiers(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add feature and model identifiers to output dataframes if present"""
+        if self.feature_name is not None:
+            df = df.assign(feature=self.feature_name)
+        if self.model_name is not None:
+            df = df.assign(model=self.model_name)
+        return df
         
     @abstractmethod
     def fit(self, formula: str, data: pd.DataFrame, **kwargs) -> 'StatisticalModel':
@@ -52,7 +62,7 @@ class StatisticalModel(ABC):
         pass
     
     @abstractmethod
-    def fit_xy(self, X: np.ndarray, y: np.ndarray, feature_names: Optional[list] = None, **kwargs) -> 'StatisticalModel':
+    def fit_xy(self, X: np.ndarray, y: np.ndarray, term_names: Optional[list] = None, **kwargs) -> 'StatisticalModel':
         """Fit the model using model matrix X and response y"""
         pass
     
@@ -80,7 +90,7 @@ class StatisticalModel(ABC):
             # Matrix-based fitting
             result = pd.DataFrame(
                 self._X, 
-                columns=self.feature_names[1:] if self.feature_names[0] == 'const' else self.feature_names
+                columns=self.term_names[1:] if self.term_names[0] == 'const' else self.term_names
             )
             result['y'] = self._y
             result['.fitted'] = self.fitted_model.fittedvalues
@@ -93,6 +103,8 @@ class StatisticalModel(ABC):
             result['.hat'] = influence.hat_matrix_diag
             result['.cooksd'] = influence.cooks_distance[0]
         
+        result = self._add_identifiers(result)
+
         return result
 
 class OLSModel(StatisticalModel):
@@ -105,22 +117,15 @@ class OLSModel(StatisticalModel):
         self.fitted_model = smf.ols(formula, data=data).fit(**kwargs)
         return self
     
-    def fit_xy(self, X: np.ndarray, y: np.ndarray, feature_names: Optional[list] = None, **kwargs) -> 'OLSModel':
+    def fit_xy(self, X: np.ndarray, y: np.ndarray, term_names: Optional[list] = None, **kwargs) -> 'OLSModel':
         """Fit OLS model using model matrix and response"""
         _validate_xy_inputs(X, y)
         
         self._X = X
         self._y = y
-        self.feature_names = feature_names or [f'x{i}' for i in range(X.shape[1])]
+        self.term_names = term_names or [f'x{i}' for i in range(X.shape[1])]
         
-        # Add intercept if not already present (check if first column is all 1s)
-        if not np.allclose(X[:, 0], 1.0):
-            X_with_intercept = sm.add_constant(X)
-            self.feature_names = ['const'] + self.feature_names
-        else:
-            X_with_intercept = X
-        
-        self.fitted_model = sm.OLS(y, X_with_intercept).fit(**kwargs)
+        self.fitted_model = sm.OLS(y, X).fit(**kwargs)
         return self
     
     def tidy(self) -> pd.DataFrame:
@@ -135,7 +140,7 @@ class OLSModel(StatisticalModel):
         if isinstance(params, pd.Series):
             terms = params.index.tolist()
         else:
-            terms = self.feature_names
+            terms = self.term_names
         
         tidy_df = pd.DataFrame({
             'term': terms,
@@ -146,6 +151,9 @@ class OLSModel(StatisticalModel):
             'conf_low': conf_int[:, 0] if isinstance(conf_int, np.ndarray) else conf_int.iloc[:, 0],
             'conf_high': conf_int[:, 1] if isinstance(conf_int, np.ndarray) else conf_int.iloc[:, 1]
         })
+        
+        # Add feature and model name if present
+        tidy_df = self._add_identifiers(tidy_df)
         
         return tidy_df.reset_index(drop=True)
     
@@ -170,13 +178,15 @@ class OLSModel(StatisticalModel):
             'log_likelihood': [model.llf]
         })
         
+        glance_df = self._add_identifiers(glance_df)
+        
         return glance_df
 
 class GAMModel(StatisticalModel):
     """GAM model wrapper using pygam"""
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, feature_name: Optional[str] = None, model_name: Optional[str] = None):
+        super().__init__(feature_name=feature_name, model_name=model_name)
         self.smooth_terms = []
         self.family = None
     
@@ -256,7 +266,7 @@ class GAMModel(StatisticalModel):
         
         # Parse formula
         y_var, x_vars, smooth_terms = self._parse_formula(formula)
-        self.feature_names = x_vars
+        self.term_names = x_vars
         self.smooth_terms = smooth_terms
         
         # Extract X and y
@@ -275,7 +285,7 @@ class GAMModel(StatisticalModel):
         
         return self
     
-    def fit_xy(self, X: np.ndarray, y: np.ndarray, feature_names: Optional[list] = None, **kwargs) -> 'GAMModel':
+    def fit_xy(self, X: np.ndarray, y: np.ndarray, term_names: Optional[list] = None, **kwargs) -> 'GAMModel':
         """Matrix-based fitting is not supported for GAM models.
         
         GAMs require a formula-based interface to specify smooth terms. Use the fit() method with
@@ -296,7 +306,7 @@ class GAMModel(StatisticalModel):
         terms_info = []
         
         # For each feature, get information
-        for i, feature_name in enumerate(self.feature_names):
+        for i, feature_name in enumerate(self.term_names):
             is_smooth = feature_name in self.smooth_terms
             
             if is_smooth:
@@ -328,7 +338,12 @@ class GAMModel(StatisticalModel):
                     'edf': 1.0
                 })
         
-        return pd.DataFrame(terms_info)
+        tidy_df = pd.DataFrame(terms_info)
+        
+        # Add feature name if present
+        tidy_df = self._add_identifiers(tidy_df)
+        
+        return tidy_df
     
     def glance(self) -> pd.DataFrame:
         """Return model-level statistics for GAM"""
@@ -341,7 +356,7 @@ class GAMModel(StatisticalModel):
         try:
             if self.data is not None:
                 # Formula-based fitting
-                predictions = model.predict(self.data[self.feature_names].values)
+                predictions = model.predict(self.data[self.term_names].values)
                 y_var = self._parse_formula(self.formula)[0]
                 y_actual = self.data[y_var].values
             else:
@@ -389,6 +404,8 @@ class GAMModel(StatisticalModel):
                 'edf': [None],
                 'nobs': [len(y_actual)]
             })
+
+            glance_df = self._add_identifiers(glance_df)
         
         return glance_df
 
@@ -442,7 +459,7 @@ def fit_model(formula: str, data: pd.DataFrame, method: str = 'ols', **kwargs) -
     return model.fit(formula, data, **kwargs)
 
 def fit_model_xy(X: np.ndarray, y: np.ndarray, method: str = 'ols', 
-                 feature_names: Optional[list] = None, **kwargs) -> StatisticalModel:
+                 term_names: Optional[list] = None, **kwargs) -> StatisticalModel:
     """
     Convenient function to fit statistical models using model matrix and response
     
@@ -454,7 +471,7 @@ def fit_model_xy(X: np.ndarray, y: np.ndarray, method: str = 'ols',
         Response vector (n_samples,)
     method : str
         Model type ('ols', 'lm', 'linear', 'gam', 'smooth')
-    feature_names : list, optional
+    term_names : list, optional
         Names for the features. If None, uses ['x0', 'x1', ...]
     **kwargs : additional arguments passed to model fitting
         For GAM: can include smooth_terms (list of feature names to smooth)
@@ -466,11 +483,11 @@ def fit_model_xy(X: np.ndarray, y: np.ndarray, method: str = 'ols',
     Examples:
     ---------
     # OLS model
-    model = fit_model_xy(X, y, method='ols', feature_names=['hp', 'wt'])
+    model = fit_model_xy(X, y, method='ols', term_names=['hp', 'wt'])
     print(model.tidy())
     
     # GAM model with some smooth terms
-    model = fit_model_xy(X, y, method='gam', feature_names=['hp', 'wt'], 
+    model = fit_model_xy(X, y, method='gam', term_names=['hp', 'wt'], 
                          smooth_terms=['wt'])
     print(model.tidy())
     """
@@ -480,4 +497,4 @@ def fit_model_xy(X: np.ndarray, y: np.ndarray, method: str = 'ols',
         raise ValueError(f"Unsupported method: {method}. Available: {list(MODEL_REGISTRY.keys())}")
     
     model = MODEL_REGISTRY[method]()
-    return model.fit_xy(X, y, feature_names=feature_names, **kwargs)
+    return model.fit_xy(X, y, term_names=term_names, **kwargs)

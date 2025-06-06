@@ -96,21 +96,22 @@ def test_ols_augment(test_data):
 def test_ols_fit_xy(test_matrices):
     """Test OLS fitting with X, y matrices"""
     X, y = test_matrices
-    model = model_fitting.fit_model_xy(X, y, method='ols', feature_names=['var1', 'var2'])
+    model = model_fitting.fit_model_xy(X, y, method='ols', term_names=['var1', 'var2'])
     assert model.fitted_model is not None
-    assert model.feature_names == ['const', 'var1', 'var2']
+    assert model.term_names == ['var1', 'var2']
     
     # Test tidy output
     tidy_df = model.tidy()
-    assert len(tidy_df) == 3  # Intercept + 2 predictors
-    assert 'const' in tidy_df['term'].values
+    assert len(tidy_df) == 2  # 2 predictors
+    assert 'var1' in tidy_df['term'].values
+    assert 'var2' in tidy_df['term'].values
 
 def test_gam_creation(test_data):
     """Test GAM model creation"""
     model = model_fitting.fit_model('y ~ x1 + x2', data=test_data, method='gam')
     assert model.fitted_model is not None
     assert model.formula == 'y ~ x1 + x2'
-    assert model.feature_names == ['x1', 'x2']
+    assert model.term_names == ['x1', 'x2']
 
 def test_gam_formula_smooth_syntax(test_data):
     """Test GAM with smooth terms specified in formula"""
@@ -152,8 +153,7 @@ def test_gam_fit_xy(test_matrices):
     """Test GAM fitting with X, y matrices"""
     X, y = test_matrices
     with pytest.raises(NotImplementedError, match="Matrix-based fitting is not supported for GAM models"):
-        model_fitting.fit_model_xy(X, y, method='gam', feature_names=['var1', 'var2'],
-                             smooth_terms=['var1'])
+        model_fitting.fit_model_xy(X, y, method='gam', term_names=['var1', 'var2'], smooth_terms=['var1'])
 
 
 def test_model_registry_valid_methods(test_data):
@@ -234,7 +234,7 @@ def test_input_validation():
 def test_augment_xy_fitting(test_matrices):
     """Test augment method works with matrix-based fitting"""
     X, y = test_matrices
-    model = model_fitting.fit_model_xy(X, y, method='ols', feature_names=['var1', 'var2'])
+    model = model_fitting.fit_model_xy(X, y, method='ols', term_names=['var1', 'var2'])
     
     aug_df = model.augment()
     assert isinstance(aug_df, pd.DataFrame)
