@@ -10,10 +10,9 @@ logger = logging.getLogger(__name__)
 
 def fit_feature_model_formula(
     y: np.ndarray,
-    X: np.ndarray,
+    data: pd.DataFrame,
     feature_name: str,
     formula: str,
-    term_names: List[str],
     model_class: str = 'gam',
     **model_kwargs
 ) -> pd.DataFrame:
@@ -23,15 +22,13 @@ def fit_feature_model_formula(
     Parameters
     ----------
     y : np.ndarray
-        Feature values to model (response variable)
-    X : np.ndarray
-        Model matrix (predictors)
+        Response vector (feature values to model)
+    data : pd.DataFrame
+        DataFrame containing predictor variables
     feature_name : str
-        Name of the feature being modeled
+        Name of the feature being modeled (for identification in output)
     formula : str
         Model formula (e.g. 'y ~ x1 + s(x2)')
-    term_names : List[str]
-        Names for the coefficients/predictors
     model_class : str
         Type of model to fit ('ols', 'gam', etc.)
     **model_kwargs : 
@@ -42,8 +39,19 @@ def fit_feature_model_formula(
     pd.DataFrame
         DataFrame with model statistics for each coefficient
     """
+    # Filter out missing values
+    valid_mask = ~np.isnan(y)
+    if np.sum(valid_mask) < len(y):
+        logger.debug(f"Filtering {len(y) - np.sum(valid_mask)} missing values for feature {feature_name}")
+        if np.sum(valid_mask) < 2:  # Need at least 2 samples for modeling
+            logger.warning(f"Skipping feature {feature_name} due to insufficient non-missing values")
+            return pd.DataFrame()
+        y = y[valid_mask]
+        data = data.iloc[valid_mask]
+    
+    # Check for zero variance
     if np.var(y) == 0:
-        logger.debug(f"Skipping feature {feature_name} due to zero variance")
+        logger.warning(f"Skipping feature {feature_name} due to zero variance")
         return pd.DataFrame()
     
     try:
@@ -55,10 +63,12 @@ def fit_feature_model_formula(
         else:
             raise ValueError(f"Unsupported model class: {model_class}")
         
-        # Create temporary DataFrame for formula interface
-        df = pd.DataFrame(X, columns=term_names)
-        df['y'] = y
-        model.fit(formula, data=df, **model_kwargs)
+        # Create temporary DataFrame with response
+        model_data = data.copy()
+        model_data['y'] = y
+        
+        # Fit the model
+        model.fit(formula, data=model_data, **model_kwargs)
         
         return model.tidy()
             
@@ -99,8 +109,18 @@ def fit_feature_model_matrix(
     pd.DataFrame
         DataFrame with model statistics for each coefficient
     """
+    # Filter out missing values
+    valid_mask = ~np.isnan(y)
+    if np.sum(valid_mask) < len(y):
+        logger.debug(f"Filtering {len(y) - np.sum(valid_mask)} missing values for feature {feature_name}")
+        if np.sum(valid_mask) < 2:  # Need at least 2 samples for modeling
+            logger.warning(f"Skipping feature {feature_name} due to insufficient non-missing values")
+            return pd.DataFrame()
+        y = y[valid_mask]
+        X = X[valid_mask]
+    
     if np.var(y) == 0:
-        logger.debug(f"Skipping feature {feature_name} due to zero variance")
+        logger.warning(f"Skipping feature {feature_name} due to zero variance")
         return pd.DataFrame()
     
     try:
@@ -121,10 +141,9 @@ def fit_feature_model_matrix(
 
 def fit_parallel_models_formula(
     X_features: np.ndarray,
-    X_model: np.ndarray,
+    data: pd.DataFrame,
     feature_names: List[str],
     formula: str,
-    term_names: List[str],
     model_class: str = 'gam',
     n_jobs: int = -1,
     batch_size: int = 100,
@@ -138,14 +157,12 @@ def fit_parallel_models_formula(
     ----------
     X_features : np.ndarray
         Feature matrix where each column is a feature to model (n_samples x n_features)
-    X_model : np.ndarray
-        Model matrix for predictors (n_samples x n_predictors)
+    data : pd.DataFrame
+        DataFrame containing predictor variables
     feature_names : List[str]
-        Names of the features
+        Names of the features being modeled
     formula : str
         Model formula (e.g. 'y ~ x1 + s(x2)')
-    term_names : List[str]
-        Names for the coefficients/predictors (without intercept)
     model_class : str
         Type of model to fit ('ols', 'gam', etc.)
     n_jobs : int
@@ -163,12 +180,10 @@ def fit_parallel_models_formula(
         DataFrame with model statistics for each feature-coefficient pair
     """
     # Input validation
-    if X_features.shape[0] != X_model.shape[0]:
-        raise ValueError("X_features and X_model must have same number of samples")
-    if len(term_names) != X_model.shape[1]:
-        raise ValueError(f"Length of term_names ({len(term_names)}) must match number of predictors (columns of X_model: {X_model.shape[1]})")
     if len(feature_names) != X_features.shape[1]:
-        raise ValueError(f"Length of feature_names ({len(feature_names)}) must match number of features (columns of X_features: {X_features.shape[1]})")
+        raise ValueError(f"Length of feature_names ({len(feature_names)}) must match number of features in X_features ({X_features.shape[1]})")
+    if X_features.shape[0] != len(data):
+        raise ValueError("X_features and data must have same number of samples")
 
     # Verbose setting for progress bar
     verbose = 10 if progress_bar else 0
@@ -178,10 +193,9 @@ def fit_parallel_models_formula(
     results_nested = Parallel(n_jobs=n_jobs, batch_size=batch_size, verbose=verbose)(
         delayed(fit_feature_model_formula)(
             X_features[:, i],
-            X_model,
+            data,
             feature_names[i],
             formula=formula,
-            term_names=term_names,
             model_class=model_class,
             **model_kwargs
         ) for i in range(X_features.shape[1])

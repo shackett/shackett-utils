@@ -19,132 +19,59 @@ import statsmodels.api as sm
 import statsmodels.formula.api as smf
 
 from shackett_utils.genomics.adata import get_adata_features_and_data
+from ..statistics.multi_model_fitting import fit_parallel_models
 
-
-def _create_regression_result(
-    feature_name: str,
-    coefficient_name: str,
-    result: sm.regression.linear_model.RegressionResultsWrapper
-) -> Dict[str, Any]:
-    """
-    Create a standardized regression result dictionary from a statsmodels result object.
-    
-    Parameters
-    ----------
-    feature_name : str
-        Name of the feature being regressed
-    coefficient_name : str
-        Name of the coefficient (variable or category)
-    result : RegressionResultsWrapper
-        Statsmodels regression result object
-        
-    Returns
-    -------
-    Dict[str, Any]
-        Dictionary containing regression statistics
-    """
-    # Extract confidence intervals
-    conf_ints = result.conf_int()
-    return {
-        "feature": feature_name,
-        "coefficient": coefficient_name,
-        "estimate": result.params[1],  # Skip intercept
-        "std_err": result.bse[1],
-        "statistic": result.tvalues[1],
-        "p_value": result.pvalues[1],
-        "conf_int_lower": conf_ints[0][1],  # [0][1] for lower bound of coefficient
-        "conf_int_upper": conf_ints[1][1],  # [1][1] for upper bound of coefficient
-    }
-
-
-def fit_feature_regression(
-    y: np.ndarray,
-    feature_name: str,
-    formula_data: Dict[str, np.ndarray],
-    formula_vars: List[str],
+def _prepare_model_matrix(
     adata: AnnData,
-) -> List[Dict[str, Any]]:
+    formula_vars: List[str]
+) -> tuple[np.ndarray, List[str]]:
     """
-    Fit regression models for a single feature against specified variables.
+    Prepare model matrix and coefficient names from AnnData object and formula variables.
     
     Parameters
     ----------
-    y : np.ndarray
-        Feature values to regress
-    feature_name : str
-        Name of the feature being regressed
-    formula_data : Dict[str, np.ndarray]
-        Dictionary mapping variable names to their values
-    formula_vars : List[str]
-        List of variable names to regress against
     adata : AnnData
-        AnnData object containing the observation metadata
+        AnnData object containing observation metadata
+    formula_vars : List[str]
+        List of variable names from formula
         
     Returns
     -------
-    List[Dict[str, Any]]
-        List of regression results for each variable/category
+    tuple[np.ndarray, List[str]]
+        Model matrix and list of coefficient names
     """
-    # Skip features with zero variance
-    if np.var(y) == 0:
-        return []
+    X_parts = []
+    coef_names = []
     
-    feature_results: List[Dict[str, Any]] = []
-    
-    try:
-        for var_name in formula_vars:
-            var_values = formula_data[var_name]
+    for var in formula_vars:
+        if var not in adata.obs.columns:
+            raise ValueError(f"Variable '{var}' not found in adata.obs")
             
-            if pd.api.types.is_categorical_dtype(adata.obs[var_name]):
-                # Handle categorical variables
-                categories = adata.obs[var_name].cat.categories
-                if len(categories) <= 1:
-                    continue
-                
-                # Regress against each category (except reference)
-                for cat in categories[1:]:
-                    dummy = (var_values == cat).astype(float)
-                    if np.var(dummy) == 0:
-                        continue
-                    
-                    X = sm.add_constant(dummy)
-                    result = sm.OLS(y, X).fit()
-                    feature_results.append(
-                        _create_regression_result(
-                            feature_name=feature_name,
-                            coefficient_name=f"{var_name}_{cat}",
-                            result=result
-                        )
-                    )
-            else:
-                # Handle continuous variables
-                X = sm.add_constant(var_values)
-                result = sm.OLS(y, X).fit()
-                feature_results.append(
-                    _create_regression_result(
-                        feature_name=feature_name,
-                        coefficient_name=var_name,
-                        result=result
-                    )
-                )
-    except Exception as e:
-        print(f"Error in feature {feature_name}: {str(e)}")
+        if pd.api.types.is_categorical_dtype(adata.obs[var]):
+            # Handle categorical variables with dummy encoding
+            dummies = pd.get_dummies(adata.obs[var], drop_first=True)
+            X_parts.append(dummies.values)
+            coef_names.extend([f"{var}_{cat}" for cat in dummies.columns])
+        else:
+            # Handle continuous variables
+            X_parts.append(adata.obs[var].values.reshape(-1, 1))
+            coef_names.append(var)
     
-    return feature_results
+    return np.hstack(X_parts), coef_names
 
 
 def apply_regression_per_feature(
     adata: AnnData,
     formula: str,
     layer: Optional[str] = None,
+    model_class: str = 'ols',
     n_jobs: int = -1,
     batch_size: int = 100,
-    progress_bar: bool = True
+    progress_bar: bool = True,
+    **model_kwargs
 ) -> pd.DataFrame:
     """
-    Apply linear regression to each feature in an AnnData object and return statistics.
-    This simplified version only supports direct regression against specified factors
-    without additional covariates from obs.
+    Apply regression to each feature in an AnnData object and return statistics.
     
     Parameters
     ----------
@@ -153,26 +80,29 @@ def apply_regression_per_feature(
     formula : str
         Formula for regression in patsy format (e.g., '~ batch').
         Don't include the dependent variable, as each feature will be used.
-    layer : Optional[str], optional
+    layer : Optional[str]
         If provided, use this layer instead of X. The layer can be a string referring
         to a layer in adata.layers, or a key in adata.obsm for alternative feature matrices.
-    n_jobs : int, optional
+    model_class : str
+        Type of model to fit ('ols', 'gam', etc.)
+    n_jobs : int
         Number of parallel jobs. -1 means using all processors.
-    batch_size : int, optional
+    batch_size : int
         Number of features to process in each batch.
-    progress_bar : bool, optional
+    progress_bar : bool
         Whether to display a progress bar.
+    **model_kwargs : 
+        Additional arguments passed to model fitting
         
     Returns
     -------
     pd.DataFrame
         DataFrame with regression statistics for each feature.
     """
-    # Get feature names and data matrix using utility function
-    feature_names, X_data = get_adata_features_and_data(adata, layer)
+    # Get feature names and data matrix
+    feature_names, X_features = get_adata_features_and_data(adata, layer)
     
     # Parse variables from formula
-    # Formula should be in the format "~ var1 + var2 + ..."
     if not formula.startswith('~'):
         raise ValueError("Formula must start with '~'")
     
@@ -182,56 +112,31 @@ def apply_regression_per_feature(
     if not formula_vars:
         raise ValueError("No variables found in formula")
     
-    # Extract variables from adata.obs
-    formula_data = {}
-    for var in formula_vars:
-        if var not in adata.obs.columns:
-            raise ValueError(f"Variable '{var}' not found in adata.obs")
-        formula_data[var] = adata.obs[var].values
+    # Prepare model matrix and coefficient names
+    X_model, coefficient_names = _prepare_model_matrix(adata, formula_vars)
     
-    # Create feature indices
-    feature_indices: List[int] = list(range(X_data.shape[1]))
+    # Add intercept to model matrix
+    X_model = sm.add_constant(X_model)
+    coefficient_names = ['const'] + coefficient_names
     
-    # Verbose setting for progress bar
-    verbose = 10 if progress_bar else 0
+    # Create feature formula if needed (for GAM)
+    feature_formula = None
+    if model_class.lower() == 'gam':
+        feature_formula = 'y ~ ' + ' + '.join(coefficient_names[1:])  # Skip intercept
     
-    # Run parallel processing with joblib
-    print(f"Starting regression analysis with {n_jobs} cores...")
-    results_nested: List[List[Dict[str, Any]]] = Parallel(n_jobs=n_jobs, batch_size=batch_size, verbose=verbose)(
-        delayed(fit_feature_regression)(
-            X_data[:, i],
-            feature_names[i],
-            formula_data,
-            formula_vars,
-            adata
-        ) for i in feature_indices
+    # Run parallel model fitting
+    return fit_parallel_models(
+        X_features=X_features,
+        X_model=X_model,
+        feature_names=feature_names,
+        model_class=model_class,
+        formula=feature_formula,
+        coefficient_names=coefficient_names,
+        n_jobs=n_jobs,
+        batch_size=batch_size,
+        progress_bar=progress_bar,
+        **model_kwargs
     )
-    
-    # Flatten results
-    results: List[Dict[str, Any]] = []
-    for sublist in results_nested:
-        results.extend(sublist)
-    
-    # Handle empty results
-    if not results:
-        print("No regression results were generated. Check your data and formula.")
-        return pd.DataFrame()
-    
-    # Convert to DataFrame
-    results_df = pd.DataFrame(results)
-    
-    # Add FDR correction (Benjamini-Hochberg)
-    if not results_df.empty and "p_value" in results_df.columns:
-        # Group by coefficient and calculate FDR-corrected p-values
-        coefs = results_df["coefficient"].unique()
-        for coef in coefs:
-            mask = results_df["coefficient"] == coef
-            results_df.loc[mask, "fdr_bh"] = sm.stats.multipletests(
-                results_df.loc[mask, "p_value"], method="fdr_bh"
-            )[1]
-    
-    print(f"Completed regression analysis for {len(results_df)} feature-coefficient pairs.")
-    return results_df
 
 
 def add_regression_results_to_anndata(

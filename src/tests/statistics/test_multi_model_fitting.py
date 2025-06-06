@@ -18,6 +18,9 @@ def test_data():
     y = 1.0 + 2.0 * X_model[:, 0] + 0.5 * X_model[:, 1] + np.random.normal(0, 0.1, n_samples)
     X_features[:, 0] = y  # First feature has strong relationship
     
+    # Create DataFrame for formula interface
+    data = pd.DataFrame(X_model, columns=['x1', 'x2'])
+    
     feature_names = [f'feature_{i}' for i in range(n_features)]
     term_names = ['x1', 'x2']
     
@@ -26,6 +29,7 @@ def test_data():
     term_names_with_intercept = ['intercept'] + term_names
     
     return {
+        'data': data,
         'X_features': X_features,
         'X_model': X_model,
         'X_model_with_intercept': X_model_with_intercept,
@@ -73,10 +77,9 @@ def test_fit_feature_model_formula(test_data):
     # Test OLS
     results_ols = mmf.fit_feature_model_formula(
         test_data['X_features'][:, 0],
-        test_data['X_model'],
+        test_data['data'],
         test_data['feature_names'][0],
         formula='y ~ x1 + x2',
-        term_names=test_data['term_names'],
         model_class='ols'
     )
     
@@ -87,10 +90,9 @@ def test_fit_feature_model_formula(test_data):
     # Test GAM
     results_gam = mmf.fit_feature_model_formula(
         test_data['X_features'][:, 0],
-        test_data['X_model'],
+        test_data['data'],
         test_data['feature_names'][0],
         formula='y ~ x1 + s(x2)',
-        term_names=test_data['term_names'],
         model_class='gam'
     )
     
@@ -119,10 +121,9 @@ def test_fit_parallel_models_formula(test_data):
     # Test OLS
     results_df_ols = mmf.fit_parallel_models_formula(
         test_data['X_features'],
-        test_data['X_model'],
+        test_data['data'],
         test_data['feature_names'],
         formula='y ~ x1 + x2',
-        term_names=test_data['term_names'],
         model_class='ols',
         n_jobs=2
     )
@@ -134,10 +135,9 @@ def test_fit_parallel_models_formula(test_data):
     # Test GAM
     results_df_gam = mmf.fit_parallel_models_formula(
         test_data['X_features'],
-        test_data['X_model'],
+        test_data['data'],
         test_data['feature_names'],
         formula='y ~ x1 + s(x2)',
-        term_names=test_data['term_names'],
         model_class='gam',
         n_jobs=2
     )
