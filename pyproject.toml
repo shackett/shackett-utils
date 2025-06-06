@@ -28,7 +28,7 @@ dependencies = [
 test = ["pytest>=7.0", "pytest-cov"]
 data = ["numpy"]
 genomics = ["anndata", "mudata", "muon", "scanpy"]
-statistics = ["scipy", "statsmodels"]
+statistics = ["scipy", "statsmodels", "pygam"]
 viz = ["matplotlib", "seaborn"]
 all = [
     # test dependencies
@@ -44,6 +44,7 @@ all = [
     # statistics dependencies
     "scipy",
     "statsmodels",
+    "pygam",
     # visualization dependencies
     "matplotlib",
     "seaborn"
