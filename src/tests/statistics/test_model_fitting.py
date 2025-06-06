@@ -26,6 +26,37 @@ def test_matrices():
     y = 1 + 2 * X[:, 0] + 0.5 * X[:, 1] + np.random.normal(0, 0.5, n)
     return X, y
 
+@pytest.fixture
+def binary_test_data():
+    """Fixture to provide binary response data for testing"""
+    np.random.seed(123)
+    n = 50
+    X1 = np.random.normal(0, 1, n)
+    X2 = np.random.uniform(0, 5, n)
+    logits = 1 + 2 * X1 + 0.5 * X2
+    probs = 1 / (1 + np.exp(-logits))
+    y = np.random.binomial(1, probs)
+    return pd.DataFrame({
+        'y': y,
+        'x1': X1,
+        'x2': X2
+    })
+
+@pytest.fixture
+def count_test_data():
+    """Fixture to provide count data for testing"""
+    np.random.seed(123)
+    n = 50
+    X1 = np.random.normal(0, 1, n)
+    X2 = np.random.uniform(0, 5, n)
+    lambda_ = np.exp(1 + 0.5 * X1 + 0.2 * X2)
+    y = np.random.poisson(lambda_)
+    return pd.DataFrame({
+        'y': y,
+        'x1': X1,
+        'x2': X2
+    })
+
 def test_ols_creation(test_data):
     """Test OLS model creation and fitting"""
     model = model_fitting.fit_model('y ~ x1 + x2', data=test_data, method='ols')
@@ -228,3 +259,39 @@ def test_residual_stats_calculation():
     assert 'residuals' in stats
     assert len(stats['residuals']) == len(y_true)
     assert stats['r_squared'] > 0.9  # Should be high with good predictions
+
+def test_logistic_regression(binary_test_data):
+    """Test logistic regression with both OLS and GAM"""
+    # Fit logistic GAM
+    model = model_fitting.fit_model('y ~ x1 + x2', data=binary_test_data, 
+                                  method='gam', family='binomial')
+    assert model.fitted_model is not None
+    assert model.family == 'binomial'
+    
+    # Check predictions are probabilities
+    preds = model.fitted_model.predict(binary_test_data[['x1', 'x2']].values)
+    assert np.all((preds >= 0) & (preds <= 1))
+    
+    # Test with smooth terms
+    model_smooth = model_fitting.fit_model('y ~ x1 + s(x2)', data=binary_test_data,
+                                         method='gam', family='binomial')
+    assert model_smooth.fitted_model is not None
+    assert model_smooth.family == 'binomial'
+    assert 'x2' in model_smooth.smooth_terms
+
+def test_poisson_regression(count_test_data):
+    """Test Poisson regression with GAM"""
+    model = model_fitting.fit_model('y ~ x1 + s(x2)', data=count_test_data,
+                                  method='gam', family='poisson')
+    assert model.fitted_model is not None
+    assert model.family == 'poisson'
+    
+    # Check predictions are non-negative
+    preds = model.fitted_model.predict(count_test_data[['x1', 'x2']].values)
+    assert np.all(preds >= 0)
+
+def test_invalid_family():
+    """Test that invalid family raises appropriate error"""
+    with pytest.raises(ValueError, match="Unsupported family"):
+        model_fitting.fit_model('y ~ x1', data=pd.DataFrame({'y': [1], 'x1': [1]}),
+                              method='gam', family='invalid')

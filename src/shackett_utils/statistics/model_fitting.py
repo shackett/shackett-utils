@@ -178,6 +178,7 @@ class GAMModel(StatisticalModel):
     def __init__(self):
         super().__init__()
         self.smooth_terms = []
+        self.family = None
     
     def _parse_formula(self, formula: str) -> tuple:
         """Parse formula string to extract dependent and independent variables"""
@@ -217,13 +218,41 @@ class GAMModel(StatisticalModel):
                 terms.append(s(i))
             else:
                 terms.append(l(i))
-        # Unpack the list of terms as separate arguments
         return TermList(*terms)
     
-    def fit(self, formula: str, data: pd.DataFrame, **kwargs) -> 'GAMModel':
-        """Fit GAM model using formula"""
+    def fit(self, formula: str, data: pd.DataFrame, family: str = 'gaussian', **kwargs) -> 'GAMModel':
+        """Fit GAM model using formula
+        
+        Parameters
+        ----------
+        formula : str
+            Model formula (e.g. 'y ~ x1 + s(x2)')
+        data : pd.DataFrame
+            Data containing the variables
+        family : str
+            Distribution family for the response variable:
+            - 'gaussian' : Normal distribution (default)
+            - 'binomial' : Logistic regression
+            - 'poisson' : Poisson regression
+            - 'gamma' : Gamma regression
+        **kwargs : additional arguments passed to LinearGAM
+        """
+        from pygam import LinearGAM, LogisticGAM, PoissonGAM, GammaGAM
+        
+        # Map family names to GAM classes
+        family_map = {
+            'gaussian': LinearGAM,
+            'binomial': LogisticGAM,
+            'poisson': PoissonGAM,
+            'gamma': GammaGAM
+        }
+        
+        if family not in family_map:
+            raise ValueError(f"Unsupported family: {family}. Available: {list(family_map.keys())}")
+        
         self.formula = formula
         self.data = data
+        self.family = family
         
         # Parse formula
         y_var, x_vars, smooth_terms = self._parse_formula(formula)
@@ -238,7 +267,9 @@ class GAMModel(StatisticalModel):
         terms = self._build_gam_terms(x_vars, smooth_terms)
         
         try:
-            self.fitted_model = LinearGAM(terms).fit(X, y)
+            # Use the appropriate GAM class for the family
+            GAMClass = family_map[family]
+            self.fitted_model = GAMClass(terms, **kwargs).fit(X, y)
         except Exception as e:
             raise RuntimeError(f"Failed to fit GAM model: {str(e)}")
         
@@ -385,6 +416,7 @@ def fit_model(formula: str, data: pd.DataFrame, method: str = 'ols', **kwargs) -
     method : str
         Model type ('ols', 'lm', 'linear', 'gam', 'smooth')
     **kwargs : additional arguments passed to model fitting
+        For GAM: can include family='binomial' for logistic regression, etc.
     
     Returns:
     --------
@@ -394,12 +426,12 @@ def fit_model(formula: str, data: pd.DataFrame, method: str = 'ols', **kwargs) -
     ---------
     # OLS model
     model = fit_model('mpg ~ hp + wt', data=mtcars, method='ols')
-    print(model.tidy())
-    print(model.glance())
     
-    # GAM model with smooth syntax
-    model = fit_model('mpg ~ hp + s(wt)', data=mtcars, method='gam')
-    print(model.tidy())
+    # Logistic GAM
+    model = fit_model('am ~ hp + s(wt)', data=mtcars, method='gam', family='binomial')
+    
+    # Poisson regression
+    model = fit_model('count ~ temp + s(time)', data=df, method='gam', family='poisson')
     """
     
     method = method.lower()

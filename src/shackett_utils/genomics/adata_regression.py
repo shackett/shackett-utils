@@ -18,6 +18,121 @@ from scipy.stats import kstest
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
 
+from shackett_utils.genomics.adata import get_adata_features_and_data
+
+
+def _create_regression_result(
+    feature_name: str,
+    coefficient_name: str,
+    result: sm.regression.linear_model.RegressionResultsWrapper
+) -> Dict[str, Any]:
+    """
+    Create a standardized regression result dictionary from a statsmodels result object.
+    
+    Parameters
+    ----------
+    feature_name : str
+        Name of the feature being regressed
+    coefficient_name : str
+        Name of the coefficient (variable or category)
+    result : RegressionResultsWrapper
+        Statsmodels regression result object
+        
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing regression statistics
+    """
+    # Extract confidence intervals
+    conf_ints = result.conf_int()
+    return {
+        "feature": feature_name,
+        "coefficient": coefficient_name,
+        "estimate": result.params[1],  # Skip intercept
+        "std_err": result.bse[1],
+        "statistic": result.tvalues[1],
+        "p_value": result.pvalues[1],
+        "conf_int_lower": conf_ints[0][1],  # [0][1] for lower bound of coefficient
+        "conf_int_upper": conf_ints[1][1],  # [1][1] for upper bound of coefficient
+    }
+
+
+def fit_feature_regression(
+    y: np.ndarray,
+    feature_name: str,
+    formula_data: Dict[str, np.ndarray],
+    formula_vars: List[str],
+    adata: AnnData,
+) -> List[Dict[str, Any]]:
+    """
+    Fit regression models for a single feature against specified variables.
+    
+    Parameters
+    ----------
+    y : np.ndarray
+        Feature values to regress
+    feature_name : str
+        Name of the feature being regressed
+    formula_data : Dict[str, np.ndarray]
+        Dictionary mapping variable names to their values
+    formula_vars : List[str]
+        List of variable names to regress against
+    adata : AnnData
+        AnnData object containing the observation metadata
+        
+    Returns
+    -------
+    List[Dict[str, Any]]
+        List of regression results for each variable/category
+    """
+    # Skip features with zero variance
+    if np.var(y) == 0:
+        return []
+    
+    feature_results: List[Dict[str, Any]] = []
+    
+    try:
+        for var_name in formula_vars:
+            var_values = formula_data[var_name]
+            
+            if pd.api.types.is_categorical_dtype(adata.obs[var_name]):
+                # Handle categorical variables
+                categories = adata.obs[var_name].cat.categories
+                if len(categories) <= 1:
+                    continue
+                
+                # Regress against each category (except reference)
+                for cat in categories[1:]:
+                    dummy = (var_values == cat).astype(float)
+                    if np.var(dummy) == 0:
+                        continue
+                    
+                    X = sm.add_constant(dummy)
+                    result = sm.OLS(y, X).fit()
+                    feature_results.append(
+                        _create_regression_result(
+                            feature_name=feature_name,
+                            coefficient_name=f"{var_name}_{cat}",
+                            result=result
+                        )
+                    )
+            else:
+                # Handle continuous variables
+                X = sm.add_constant(var_values)
+                result = sm.OLS(y, X).fit()
+                feature_results.append(
+                    _create_regression_result(
+                        feature_name=feature_name,
+                        coefficient_name=var_name,
+                        result=result
+                    )
+                )
+    except Exception as e:
+        print(f"Error in feature {feature_name}: {str(e)}")
+    
+    return feature_results
+
+
 def apply_regression_per_feature(
     adata: AnnData,
     formula: str,
@@ -53,43 +168,8 @@ def apply_regression_per_feature(
     pd.DataFrame
         DataFrame with regression statistics for each feature.
     """
-    # Get feature names based on data source
-    if layer is None:
-        feature_names = adata.var_names
-    elif layer in adata.layers:
-        feature_names = adata.var_names
-    elif layer in adata.obsm:
-        # For obsm matrices, we need to generate feature names
-        if hasattr(adata.obsm[layer], 'columns'):
-            # If it's a DataFrame with column names
-            feature_names = adata.obsm[layer].columns
-        else:
-            # Otherwise, generate numeric feature names
-            n_features = adata.obsm[layer].shape[1]
-            feature_names = [f"{layer}_feature_{i}" for i in range(n_features)]
-    else:
-        raise ValueError(f"Layer '{layer}' not found in adata.layers or adata.obsm")
-    
-    # Get data to regress
-    if layer is None:
-        if isinstance(adata.X, np.ndarray):
-            X_data = adata.X
-        else:
-            X_data = adata.X.toarray()
-    elif layer in adata.layers:
-        if isinstance(adata.layers[layer], np.ndarray):
-            X_data = adata.layers[layer]
-        else:
-            X_data = adata.layers[layer].toarray()
-    elif layer in adata.obsm:
-        if isinstance(adata.obsm[layer], pd.DataFrame):
-            X_data = adata.obsm[layer].values
-        elif isinstance(adata.obsm[layer], np.ndarray):
-            X_data = adata.obsm[layer]
-        elif sp.issparse(adata.obsm[layer]):
-            X_data = adata.obsm[layer].toarray()
-        else:
-            raise ValueError(f"Unsupported data type for obsm['{layer}']")
+    # Get feature names and data matrix using utility function
+    feature_names, X_data = get_adata_features_and_data(adata, layer)
     
     # Parse variables from formula
     # Formula should be in the format "~ var1 + var2 + ..."
@@ -109,93 +189,6 @@ def apply_regression_per_feature(
             raise ValueError(f"Variable '{var}' not found in adata.obs")
         formula_data[var] = adata.obs[var].values
     
-    # Define a function to process a single feature
-    def process_feature(i: int) -> List[Dict[str, Any]]:
-        feature_name = feature_names[i]
-        y = X_data[:, i]
-        
-        # Skip features with zero variance
-        if np.var(y) == 0:
-            return []
-        
-        feature_results: List[Dict[str, Any]] = []
-        
-        try:
-            # Create design matrix manually for each variable in formula
-            for var_name in formula_vars:
-                var_values = formula_data[var_name]
-                
-                # For categorical variables, create dummy variables
-                if pd.api.types.is_categorical_dtype(adata.obs[var_name]):
-                    categories = adata.obs[var_name].cat.categories
-                    
-                    # Skip if there's only one category
-                    if len(categories) <= 1:
-                        continue
-                    
-                    # For each category, perform a separate regression
-                    for cat in categories[1:]:  # Skip first category as reference
-                        # Create dummy variable (1 if category matches, 0 otherwise)
-                        dummy = (var_values == cat).astype(float)
-                        
-                        # Skip if dummy has no variation
-                        if np.var(dummy) == 0:
-                            continue
-                        
-                        # Simple linear regression: y = b0 + b1*x
-                        X = sm.add_constant(dummy)
-                        model = sm.OLS(y, X)
-                        result = model.fit()
-                        
-                        # Extract confidence intervals - FIX: access by index, not .loc
-                        conf_ints = result.conf_int()
-                        conf_lower = conf_ints[0][1]  # [0][1] for lower bound of coefficient
-                        conf_upper = conf_ints[1][1]  # [1][1] for upper bound of coefficient
-                        
-                        # Store results only for the coefficient (not intercept)
-                        coef_name = f"{var_name}_{cat}"
-                        feature_results.append(
-                            {
-                                "feature": feature_name,
-                                "coefficient": coef_name,
-                                "estimate": result.params[1],  # Skip intercept
-                                "std_err": result.bse[1],
-                                "statistic": result.tvalues[1],
-                                "p_value": result.pvalues[1],
-                                "conf_int_lower": conf_lower,
-                                "conf_int_upper": conf_upper,
-                            }
-                        )
-                # For continuous variables, perform simple regression
-                else:
-                    # Simple linear regression: y = b0 + b1*x
-                    X = sm.add_constant(var_values)
-                    model = sm.OLS(y, X)
-                    result = model.fit()
-                    
-                    # Extract confidence intervals - FIX: access by index, not .loc
-                    conf_ints = result.conf_int()
-                    conf_lower = conf_ints[0][1]  # [0][1] for lower bound of coefficient
-                    conf_upper = conf_ints[1][1]  # [1][1] for upper bound of coefficient
-                    
-                    # Store results only for the coefficient (not intercept)
-                    feature_results.append(
-                        {
-                            "feature": feature_name,
-                            "coefficient": var_name,
-                            "estimate": result.params[1],  # Skip intercept
-                            "std_err": result.bse[1],
-                            "statistic": result.tvalues[1],
-                            "p_value": result.pvalues[1],
-                            "conf_int_lower": conf_lower,
-                            "conf_int_upper": conf_upper,
-                        }
-                    )
-        except Exception as e:
-            print(f"Error in feature {feature_name}: {str(e)}")
-        
-        return feature_results
-    
     # Create feature indices
     feature_indices: List[int] = list(range(X_data.shape[1]))
     
@@ -205,7 +198,13 @@ def apply_regression_per_feature(
     # Run parallel processing with joblib
     print(f"Starting regression analysis with {n_jobs} cores...")
     results_nested: List[List[Dict[str, Any]]] = Parallel(n_jobs=n_jobs, batch_size=batch_size, verbose=verbose)(
-        delayed(process_feature)(i) for i in feature_indices
+        delayed(fit_feature_regression)(
+            X_data[:, i],
+            feature_names[i],
+            formula_data,
+            formula_vars,
+            adata
+        ) for i in feature_indices
     )
     
     # Flatten results
