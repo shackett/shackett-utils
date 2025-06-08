@@ -2,7 +2,6 @@
 This module contains functions for regression and factor analysis.
 """
 
-from joblib import Parallel, delayed
 import os
 from typing import List, Optional, Tuple, Dict, Union, Any
 import logging
@@ -22,46 +21,8 @@ from shackett_utils.genomics.adata_utils import get_adata_features_and_data
 from ..statistics.multi_model_fitting import fit_parallel_models_formula
 from ..statistics.constants import STATISTICS_DEFS, TIDY_DEFS
 
-def _prepare_model_matrix(
-    adata: AnnData,
-    formula_vars: List[str]
-) -> tuple[np.ndarray, List[str]]:
-    """
-    Prepare model matrix and coefficient names from AnnData object and formula variables.
-    
-    Parameters
-    ----------
-    adata : AnnData
-        AnnData object containing observation metadata
-    formula_vars : List[str]
-        List of variable names from formula
-        
-    Returns
-    -------
-    tuple[np.ndarray, List[str]]
-        Model matrix and list of coefficient names
-    """
-    X_parts = []
-    coef_names = []
-    
-    for var in formula_vars:
-        if var not in adata.obs.columns:
-            raise ValueError(f"Variable '{var}' not found in adata.obs")
-            
-        if pd.api.types.is_categorical_dtype(adata.obs[var]):
-            # Handle categorical variables with dummy encoding
-            dummies = pd.get_dummies(adata.obs[var], drop_first=True)
-            X_parts.append(dummies.values)
-            coef_names.extend([f"{var}_{cat}" for cat in dummies.columns])
-        else:
-            # Handle continuous variables
-            X_parts.append(adata.obs[var].values.reshape(-1, 1))
-            coef_names.append(var)
-    
-    return np.hstack(X_parts), coef_names
 
-
-def apply_regression_per_feature(
+def adata_model_fitting(
     adata: AnnData,
     formula: str,
     layer: Optional[str] = None,
@@ -72,7 +33,7 @@ def apply_regression_per_feature(
     **model_kwargs
 ) -> pd.DataFrame:
     """
-    Apply regression to each feature in an AnnData object and return statistics.
+    Apply a regression model to each feature in an AnnData object and return statistics.
     
     Parameters
     ----------
@@ -100,26 +61,7 @@ def apply_regression_per_feature(
     pd.DataFrame
         DataFrame with regression statistics for each feature.
     """
-    # Get feature names and data matrix
-    feature_names, X_features = get_adata_features_and_data(adata, layer)
-    
-    # Parse variables from formula
-    if not formula.startswith('~'):
-        raise ValueError("Formula must start with '~'")
-    
-    formula_vars = [var.strip() for var in formula[1:].split('+')]
-    formula_vars = [var for var in formula_vars if var]  # Remove empty strings
-    
-    if not formula_vars:
-        raise ValueError("No variables found in formula")
-    
-    # Prepare model matrix and coefficient names
-    X_model, coefficient_names = _prepare_model_matrix(adata, formula_vars)
-    
-    # Add intercept to model matrix
-    X_model = sm.add_constant(X_model)
-    coefficient_names = ['const'] + coefficient_names
-    
+        
     # Create feature formula if needed (for GAM)
     feature_formula = None
     if model_class.lower() == 'gam':

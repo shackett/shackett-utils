@@ -230,6 +230,42 @@ def control_fdr(results_df: pd.DataFrame, fdr_method: str = FDR_METHODS_DEFS.FDR
     
     return results_df
 
+def _validate_formula(formula: str) -> str:
+    """
+    Validate and standardize model formula to ensure 'y' is the dependent variable.
+    
+    Parameters
+    ----------
+    formula : str
+        Model formula to validate. Can be either a full formula (e.g. 'y ~ x1 + x2')
+        or a right-hand side only (e.g. '~ x1 + x2' or 'x1 + x2').
+        
+    Returns
+    -------
+    str
+        Standardized formula with 'y' as dependent variable
+        
+    Raises
+    ------
+    ValueError
+        If formula is invalid or uses a dependent variable other than 'y'
+    """
+    formula = formula.strip()
+    
+    # Split formula and validate number of '~' characters first
+    parts = formula.split('~')
+    if len(parts) == 1:
+        raise ValueError("Formula must contain exactly one '~' character")
+    elif len(parts) > 2:
+        raise ValueError("Formula must contain exactly one '~' character")
+    
+    # Has one '~', check if it starts with '~' or has a dependent variable
+    lhs = parts[0].strip()
+    if not lhs or lhs == 'y':  # Empty left side means formula started with '~'
+        return f"y ~ {parts[1].strip()}"
+    else:
+        raise ValueError(f"Formula must use 'y' as dependent variable, got '{lhs}'")
+    
 def fit_parallel_models_formula(
     X_features: np.ndarray,
     data: pd.DataFrame,
@@ -240,6 +276,7 @@ def fit_parallel_models_formula(
     batch_size: int = 100,
     model_name: Optional[str] = None,
     progress_bar: bool = True,
+    fdr_control: bool = True,
     **model_kwargs
 ) -> pd.DataFrame:
     """
@@ -254,7 +291,8 @@ def fit_parallel_models_formula(
     feature_names : List[str]
         Names of features
     formula : str
-        Model formula (e.g. 'y ~ x1 + x2')
+        Model formula (e.g. 'y ~ x1 + x2' or '~ x1 + x2' or 'x1 + x2').
+        The dependent variable must be 'y' if specified.
     model_class : str, optional
         Type of model to fit ('ols' or 'gam'). Default is 'gam'.
     n_jobs : int, optional
@@ -265,6 +303,8 @@ def fit_parallel_models_formula(
         Name of the model for identification in output. Default is None.
     progress_bar : bool, optional
         Whether to show progress bar. Default is True.
+    fdr_control : bool, optional
+        Whether to apply FDR control to the results. Default is True.
     **model_kwargs
         Additional arguments passed to model fitting
         
@@ -278,6 +318,9 @@ def fit_parallel_models_formula(
         raise ValueError(f"Length of feature_names ({len(feature_names)}) must match number of features in X_features ({X_features.shape[1]})")
     if X_features.shape[0] != len(data):
         raise ValueError("X_features and data must have same number of samples")
+    
+    # Validate and standardize formula
+    formula = _validate_formula(formula)
 
     # Verbose setting for progress bar
     verbose = 10 if progress_bar else 0
@@ -304,10 +347,11 @@ def fit_parallel_models_formula(
     
     # Combine results and apply FDR control
     results_df = pd.concat(results_nested, ignore_index=True)
-    results = control_fdr(results_df)
+    if fdr_control:
+        results_df = control_fdr(results_df)
     
-    logger.info(f"Completed model fitting for {len(results)} feature-term pairs.")
-    return results
+    logger.info(f"Completed model fitting for {len(results_df)} feature-term pairs.")
+    return results_df
 
 def fit_parallel_models_matrix(
     X_features: np.ndarray,
@@ -318,6 +362,7 @@ def fit_parallel_models_matrix(
     batch_size: int = 100,
     model_name: Optional[str] = None,
     progress_bar: bool = True,
+    fdr_control: bool = True,
     **model_kwargs
 ) -> pd.DataFrame:
     """
@@ -341,6 +386,8 @@ def fit_parallel_models_matrix(
         Name of the model for identification in output. Default is None.
     progress_bar : bool
         Whether to display a progress bar.
+    fdr_control : bool
+        Whether to apply FDR control to the results. Default is True.
     **model_kwargs : 
         Additional arguments passed to model fitting
         
@@ -381,7 +428,8 @@ def fit_parallel_models_matrix(
     
     # Combine results and apply FDR control
     results_df = pd.concat(results_nested, ignore_index=True)
-    results = control_fdr(results_df)
+    if fdr_control:
+        results_df = control_fdr(results_df)
     
-    logger.info(f"Completed model fitting for {len(results)} feature-term pairs.")
-    return results 
+    logger.info(f"Completed model fitting for {len(results_df)} feature-term pairs.")
+    return results_df 

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 STATISTICS_DEFS = SimpleNamespace(
     FDR_METHOD = "fdr_method",
     FEATURE_NAME = "feature_name",
+    FEATURE_NAMES = "feature_names",
     MODEL_NAME = "model_name",
     TERM = "term",
     P_VALUE = "p_value",

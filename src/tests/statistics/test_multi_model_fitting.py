@@ -144,7 +144,8 @@ def test_fit_parallel_models_matrix(test_data):
         test_data['X_model_with_intercept'],
         test_data['feature_names'],
         test_data['term_names_with_intercept'],
-        n_jobs=2
+        n_jobs=2,
+        fdr_control=True
     )
     
     assert isinstance(results_df, pd.DataFrame)
@@ -162,7 +163,8 @@ def test_fit_parallel_models_formula(test_data):
         test_data['feature_names'],
         formula='y ~ x1 + x2',
         model_class='ols',
-        n_jobs=2
+        n_jobs=2,
+        fdr_control=True
     )
     
     assert isinstance(results_df_ols, pd.DataFrame)
@@ -176,7 +178,8 @@ def test_fit_parallel_models_formula(test_data):
         test_data['feature_names'],
         formula='y ~ x1 + s(x2)',
         model_class='gam',
-        n_jobs=2
+        n_jobs=2,
+        fdr_control=True
     )
     
     assert isinstance(results_df_gam, pd.DataFrame)
@@ -232,7 +235,8 @@ def test_missing_values_formula(missing_data, caplog):
         missing_data['data'],
         missing_data['feature_names'],
         formula='y ~ x1 + x2',
-        model_class='ols'
+        model_class='ols',
+        fdr_control=True
     )
     
     assert isinstance(results_all, pd.DataFrame)
@@ -263,7 +267,8 @@ def test_missing_values_matrix(missing_data, caplog):
         missing_data['X_features'],
         missing_data['X_model_with_intercept'],
         missing_data['feature_names'],
-        missing_data['term_names_with_intercept']
+        missing_data['term_names_with_intercept'],
+        fdr_control=True
     )
     
     assert isinstance(results_all, pd.DataFrame)
@@ -340,7 +345,8 @@ def test_progress_bar(test_data, caplog):
         test_data['X_model_with_intercept'],
         test_data['feature_names'],
         test_data['term_names_with_intercept'],
-        progress_bar=True
+        progress_bar=True,
+        fdr_control=True
     )
     assert any("Starting parallel model fitting" in record.message for record in caplog.records)
     assert any("Completed model fitting" in record.message for record in caplog.records)
@@ -353,7 +359,64 @@ def test_progress_bar(test_data, caplog):
         test_data['X_model_with_intercept'],
         test_data['feature_names'],
         test_data['term_names_with_intercept'],
-        progress_bar=False
+        progress_bar=False,
+        fdr_control=True
     )
     assert any("Starting parallel model fitting" in record.message for record in caplog.records)
-    assert any("Completed model fitting" in record.message for record in caplog.records) 
+    assert any("Completed model fitting" in record.message for record in caplog.records)
+
+def test_formula_validation():
+    """Test formula validation and standardization"""
+    # Test valid formulas
+    assert mmf._validate_formula("y ~ x1 + x2") == "y ~ x1 + x2"
+    assert mmf._validate_formula("~ x1 + x2") == "y ~ x1 + x2"
+    
+    # Test invalid formulas
+    with pytest.raises(ValueError, match="must contain exactly one '~' character"):
+        mmf._validate_formula("x1 + x2")
+    
+    with pytest.raises(ValueError, match="must use 'y' as dependent variable"):
+        mmf._validate_formula("z ~ x1 + x2")
+    
+    with pytest.raises(ValueError, match="must contain exactly one '~' character"):
+        mmf._validate_formula("y ~ x1 ~ x2")
+    
+    # Test formula with extra whitespace
+    assert mmf._validate_formula("  y  ~  x1  +  x2  ") == "y ~ x1  +  x2"
+    assert mmf._validate_formula("  ~  x1  +  x2  ") == "y ~ x1  +  x2"
+
+def test_fit_parallel_models_formula_validation(test_data):
+    """Test formula validation in fit_parallel_models_formula"""
+    # Test with formula starting with ~
+    results_rhs = mmf.fit_parallel_models_formula(
+        test_data['X_features'],
+        test_data['data'],
+        test_data['feature_names'],
+        formula='~ x1 + x2',
+        model_class='ols',
+        n_jobs=2
+    )
+    assert isinstance(results_rhs, pd.DataFrame)
+    assert len(results_rhs) > 0
+    
+    # Test with multiple ~ characters
+    with pytest.raises(ValueError, match="must contain exactly one '~'"):
+        mmf.fit_parallel_models_formula(
+            test_data['X_features'],
+            test_data['data'],
+            test_data['feature_names'],
+            formula='y ~ x1 ~ x2',
+            model_class='ols',
+            n_jobs=2
+        )
+    
+    # Test with invalid dependent variable
+    with pytest.raises(ValueError, match="must use 'y' as dependent variable"):
+        mmf.fit_parallel_models_formula(
+            test_data['X_features'],
+            test_data['data'],
+            test_data['feature_names'],
+            formula='z ~ x1 + x2',
+            model_class='ols',
+            n_jobs=2
+        ) 
