@@ -12,31 +12,6 @@ from .constants import REQUIRED_TIDY_VARS, STATISTICS_DEFS, MULTITEST_GROUPING_V
 
 logger = logging.getLogger(__name__)
 
-def _handle_model_error(e: Exception, feature_name: str) -> pd.DataFrame:
-    """
-    Handle model fitting errors consistently.
-    
-    Parameters
-    ----------
-    e : Exception
-        The caught exception
-    feature_name : str
-        Name of the feature being modeled
-        
-    Returns
-    -------
-    pd.DataFrame
-        Empty DataFrame for failed model fits
-    """
-    if isinstance(e, ValueError) and "Unsupported model class" in str(e):
-        raise e
-    # Handle perfect collinearity and other numerical errors
-    if any(msg in str(e).lower() for msg in ['singular', 'collinear', 'invertible']):
-        logger.warning(f"Skipping feature {feature_name} due to perfect collinearity or numerical issues")
-    else:
-        logger.warning(f"Error in feature {feature_name}: {str(e)}")
-    return pd.DataFrame()
-
 def fit_feature_model_formula(
     y: np.ndarray,
     data: pd.DataFrame,
@@ -44,6 +19,7 @@ def fit_feature_model_formula(
     formula: str,
     model_class: str = 'ols',
     model_name: Optional[str] = None,
+    allow_failures: bool = False,
     **model_kwargs
 ) -> pd.DataFrame:
     """
@@ -63,6 +39,9 @@ def fit_feature_model_formula(
         Type of model to fit ('ols', 'gam', etc.)
     model_name : str, optional
         Name of the model for identification. Default is None.
+    allow_failures : bool
+        If True, handle errors gracefully and return empty DataFrame.
+        If False, raise exceptions for debugging. Default is False.
     **model_kwargs
         Additional arguments passed to model fitting
         
@@ -70,6 +49,11 @@ def fit_feature_model_formula(
     -------
     pd.DataFrame
         DataFrame with model statistics for each coefficient
+        
+    Raises
+    ------
+    Exception
+        If allow_failures is False and an error occurs during model fitting
     """
     # Filter out missing values
     valid_mask = ~np.isnan(y)
@@ -95,6 +79,7 @@ def fit_feature_model_formula(
         
         # Create temporary DataFrame with response
         model_data = data.copy()
+        # Ensure y is float64 before adding to DataFrame
         model_data['y'] = y
         
         # Fit the model
@@ -103,7 +88,10 @@ def fit_feature_model_formula(
         return model.tidy()
             
     except Exception as e:
-        return _handle_model_error(e, feature_name)
+        if allow_failures:
+            return _handle_model_error(e, feature_name)
+        else:
+            raise
 
 def fit_feature_model_matrix(
     y: np.ndarray,
@@ -265,8 +253,9 @@ def _validate_formula(formula: str, data: Optional[pd.DataFrame] = None) -> str:
     Parameters
     ----------
     formula : str
-        Model formula to validate. Can be either a full formula (e.g. 'y ~ x1 + x2')
-        or a right-hand side only (e.g. '~ x1 + x2' or 'x1 + x2').
+        Model formula to validate. Must be either:
+        - Full formula with response: 'y ~ x1 + x2'
+        - Formula starting with ~: '~ x1 + x2'
     data : Optional[pd.DataFrame]
         DataFrame containing the variables referenced in the formula.
         If provided, checks that all variables are numeric.
@@ -279,40 +268,32 @@ def _validate_formula(formula: str, data: Optional[pd.DataFrame] = None) -> str:
     Raises
     ------
     ValueError
-        If formula is invalid, uses a dependent variable other than 'y',
-        or contains non-numeric variables
+        If formula is invalid or contains non-numeric variables
     """
     formula = formula.strip()
     
-    # Split formula and validate number of '~' characters first
+    # Validate formula has exactly one ~
     parts = formula.split('~')
-    if len(parts) == 1:
-        raise ValueError("Formula must contain exactly one '~' character")
-    elif len(parts) > 2:
+    if len(parts) != 2:
         raise ValueError("Formula must contain exactly one '~' character")
     
-    # Has one '~', check if it starts with '~' or has a dependent variable
+    # Handle formulas starting with ~
     lhs = parts[0].strip()
-    if not lhs or lhs == 'y':  # Empty left side means formula started with '~'
-        formula = f"y ~ {parts[1].strip()}"
-    else:
+    rhs = parts[1].strip()
+    if not lhs:
+        formula = f"y ~ {rhs}"
+    elif lhs != 'y':
         raise ValueError(f"Formula must use 'y' as dependent variable, got '{lhs}'")
+    else:
+        formula = f"y ~ {rhs}"
     
     # If data is provided, check that all variables are numeric
     if data is not None:
-        # Extract variable names from formula, including those in function calls
-        rhs = parts[1].strip()
-        variables = set()
-        
-        # First extract variables inside function calls like s()
-        func_vars = re.findall(r'\w+\(([^)]+)\)', rhs)
-        for var in func_vars:
-            variables.add(var.strip())
-        
-        # Then remove function calls and extract remaining variables
-        rhs = re.sub(r'\w+\([^)]*\)', '', rhs)
+        # Remove s() from terms like s(x)
+        rhs_clean = re.sub(r's\((.*?)\)', r'\1', rhs)
         # Split on operators and get unique variables
-        variables.update(var.strip() for var in re.split(r'[+\-*/]', rhs) if var.strip())
+        variables = set()
+        variables.update(var.strip() for var in re.split(r'[+\-*/]', rhs_clean) if var.strip())
         
         # Check each variable
         for var in variables:
@@ -323,52 +304,83 @@ def _validate_formula(formula: str, data: Optional[pd.DataFrame] = None) -> str:
     
     return formula
 
+def _detect_model_class_from_formula(formula: str) -> str:
+    """
+    Detect whether a formula requires GAM or OLS based on presence of smooth terms.
+    
+    Parameters
+    ----------
+    formula : str
+        Model formula (e.g. 'y ~ x1 + s(x2)')
+        
+    Returns
+    -------
+    str
+        'gam' if formula contains smooth terms s(), 'ols' otherwise
+    """
+    # Check if formula contains any smooth terms s()
+    # Match 's(' only when it's at the start of a term or after a '+' or '~'
+    has_smooth_terms = bool(re.search(r'(^|\s|~|\+)\s*s\([^)]+\)', formula))
+    model_class = 'gam' if has_smooth_terms else 'ols'
+    logger.debug(f"Detected model_class='{model_class}' for formula='{formula}'")
+    return model_class
+
 def fit_parallel_models_formula(
     X_features: np.ndarray,
     data: pd.DataFrame,
     feature_names: List[str],
     formula: str,
-    model_class: str = 'gam',
-    n_jobs: int = 1,
-    batch_size: int = 100,
+    model_class: Optional[str] = None,
     model_name: Optional[str] = None,
-    progress_bar: bool = True,
+    n_jobs: int = 1,
+    allow_failures: bool = False,
     fdr_control: bool = True,
+    fdr_method: str = FDR_METHODS_DEFS.FDR_BH,
+    batch_size: int = 100,
+    progress_bar: bool = True,
     **model_kwargs
 ) -> pd.DataFrame:
     """
-    Fit multiple features in parallel using formula interface.
+    Fit models in parallel for multiple features using formula interface.
     
     Parameters
     ----------
     X_features : np.ndarray
-        Feature matrix where each column is a feature to model (n_samples x n_features)
+        Feature matrix (n_samples, n_features)
     data : pd.DataFrame
-        DataFrame containing variables for formula
+        DataFrame containing predictor variables
     feature_names : List[str]
-        Names of features
+        Names of features being modeled
     formula : str
-        Model formula (e.g. 'y ~ x1 + x2' or '~ x1 + x2' or 'x1 + x2').
-        The dependent variable must be 'y' if specified.
+        Model formula (e.g. 'y ~ x1 + s(x2)')
     model_class : str, optional
-        Type of model to fit ('ols' or 'gam'). Default is 'gam'.
-    n_jobs : int, optional
-        Number of parallel jobs. Default is 1.
-    batch_size : int, optional
-        Number of features to process in each batch. Default is 100.
+        Type of model to fit ('ols', 'gam', etc.). If None, will be detected from formula.
     model_name : str, optional
-        Name of the model for identification in output. Default is None.
-    progress_bar : bool, optional
-        Whether to show progress bar. Default is True.
-    fdr_control : bool, optional
-        Whether to apply FDR control to the results. Default is True.
+        Name of the model for identification
+    n_jobs : int
+        Number of parallel jobs. Default is 1.
+    allow_failures : bool
+        If True, handle errors gracefully. Default is False.
+    fdr_control : bool
+        Whether to perform FDR control. Default is True.
+    fdr_method : str
+        FDR control method. Default is 'bh'.
+    batch_size : int
+        Number of features to process in each batch. Default is 100.
+    progress_bar : bool
+        Whether to display a progress bar. Default is True.
     **model_kwargs
         Additional arguments passed to model fitting
         
     Returns
     -------
     pd.DataFrame
-        Combined results from all models
+        Combined DataFrame with model statistics for all features
+        
+    Raises
+    ------
+    ValueError
+        If trying to fit OLS model with smooth terms in formula
     """
     # Input validation
     if len(feature_names) != X_features.shape[1]:
@@ -376,6 +388,25 @@ def fit_parallel_models_formula(
     if X_features.shape[0] != len(data):
         raise ValueError("X_features and data must have same number of samples")
     
+    inferred_model_class = _detect_model_class_from_formula(formula)
+    # Auto-detect model class if not provided   
+    if model_class is None:
+        model_class = inferred_model_class
+        logger.info(f"Auto-detected model_class='{model_class}' for formula='{formula}'")
+    else:
+        if model_class != inferred_model_class:
+            if model_class == 'ols' and inferred_model_class == 'gam':
+                raise ValueError(
+                    f"Cannot fit OLS model with smooth terms. Formula '{formula}' contains smooth terms "
+                    f"but model_class='ols' was specified. Either:\n"
+                    f"1. Use model_class='gam' to fit with smooth terms\n"
+                    f"2. Remove smooth terms from formula"
+                )
+            logger.warning(
+                f"Model class mismatch: provided='{model_class}' inferred='{inferred_model_class}'. "
+                f"Using provided model class='{model_class}'"
+            )
+
     # Validate and standardize formula
     formula = _validate_formula(formula)
 
@@ -392,8 +423,10 @@ def fit_parallel_models_formula(
             formula=formula,
             model_class=model_class,
             model_name=model_name,
+            allow_failures=allow_failures,
             **model_kwargs
-        ) for i in range(X_features.shape[1])
+        )
+        for i in range(X_features.shape[1])
     )
     
     # Filter out empty DataFrames and combine results
@@ -405,7 +438,7 @@ def fit_parallel_models_formula(
     # Combine results and apply FDR control
     results_df = pd.concat(results_nested, ignore_index=True)
     if fdr_control:
-        results_df = control_fdr(results_df)
+        results_df = control_fdr(results_df, fdr_method=fdr_method)
     
     logger.info(f"Completed model fitting for {len(results_df)} feature-term pairs.")
     return results_df
@@ -490,3 +523,28 @@ def fit_parallel_models_matrix(
     
     logger.info(f"Completed model fitting for {len(results_df)} feature-term pairs.")
     return results_df 
+
+def _handle_model_error(e: Exception, feature_name: str) -> pd.DataFrame:
+    """
+    Handle model fitting errors consistently.
+    
+    Parameters
+    ----------
+    e : Exception
+        The caught exception
+    feature_name : str
+        Name of the feature being modeled
+        
+    Returns
+    -------
+    pd.DataFrame
+        Empty DataFrame for failed model fits
+    """
+    if isinstance(e, ValueError) and "Unsupported model class" in str(e):
+        raise e
+    # Handle perfect collinearity and other numerical errors
+    if any(msg in str(e).lower() for msg in ['singular', 'collinear', 'invertible']):
+        logger.warning(f"Skipping feature {feature_name} due to perfect collinearity or numerical issues")
+    else:
+        logger.warning(f"Error in feature {feature_name}: {str(e)}")
+    return pd.DataFrame()

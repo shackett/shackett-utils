@@ -372,3 +372,24 @@ def test_model_identifiers():
     model_formula.fit('y ~ x1 + x2', data)
     tidy_formula = model_formula.tidy()
     assert list(tidy_formula.columns[:3]) == [STATISTICS_DEFS.MODEL_NAME, STATISTICS_DEFS.TERM, STATISTICS_DEFS.FEATURE_NAME]
+
+def test_gam_smooth_only(test_data):
+    """Test GAM with only smooth terms (no linear terms)"""
+    # Test with single smooth term
+    model = model_fitting.fit_model('y ~ s(x1)', data=test_data, method='gam')
+    assert model.fitted_model is not None
+    assert model.smooth_terms == ['x1']
+    assert len(model.term_names) == 1
+    
+    # Test with multiple smooth terms
+    model2 = model_fitting.fit_model('y ~ s(x1) + s(x2)', data=test_data, method='gam')
+    assert model2.fitted_model is not None
+    assert set(model2.smooth_terms) == {'x1', 'x2'}
+    assert len(model2.term_names) == 2
+    
+    # Test tidy output
+    tidy_df = model2.tidy()
+    assert isinstance(tidy_df, pd.DataFrame)
+    assert len(tidy_df) == 2  # 2 predictors
+    assert all(row['type'] == 'smooth' for _, row in tidy_df.iterrows())  # all terms should be smooth
+    assert all('s(' in term for term in tidy_df['term'])  # all terms should have s() wrapper

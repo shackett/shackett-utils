@@ -24,6 +24,7 @@ def adata_model_fitting(
     model_name: Optional[str] = None,
     progress_bar: bool = True,
     fdr_control: bool = True,
+    allow_failures: bool = False,
     **model_kwargs
 ) -> pd.DataFrame:
     """
@@ -51,6 +52,9 @@ def adata_model_fitting(
         Whether to display a progress bar.
     fdr_control : bool
         Whether to apply FDR control to the p-values.
+    allow_failures : bool
+        If True, handle errors gracefully and return empty DataFrame for failed fits.
+        If False, raise exceptions for debugging. Default is False.
     **model_kwargs : 
         Additional arguments passed to model fitting
         
@@ -58,21 +62,27 @@ def adata_model_fitting(
     -------
     pd.DataFrame
         DataFrame with regression statistics for each feature.
+        
+    Raises
+    ------
+    Exception
+        If allow_failures is False and an error occurs during model fitting
     """
         
-    feature_names, data_matrix = adata_utils.get_adata_features_and_data(adata, layer = layer)
+    feature_names, data_matrix = adata_utils.get_adata_features_and_data(adata, layer=layer)
 
     return multi_model_fitting.fit_parallel_models_formula(
-        X_features = data_matrix,
-        data = adata.obs,
-        feature_names = feature_names,
-        formula = formula,
-        model_class = model_class,
-        n_jobs = n_jobs,
-        batch_size = batch_size,
-        model_name = model_name,
-        fdr_control = fdr_control,
-        progress_bar = progress_bar,
+        X_features=data_matrix,
+        data=adata.obs,
+        feature_names=feature_names,
+        formula=formula,
+        model_class=model_class,
+        n_jobs=n_jobs,
+        batch_size=batch_size,
+        model_name=model_name,
+        fdr_control=fdr_control,
+        progress_bar=progress_bar,
+        allow_failures=allow_failures,
         **model_kwargs
     )
 

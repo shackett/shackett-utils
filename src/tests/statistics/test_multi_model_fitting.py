@@ -1,8 +1,9 @@
-import pytest
 import numpy as np
 import pandas as pd
 from shackett_utils.statistics import multi_model_fitting as mmf
 from shackett_utils.statistics.constants import STATISTICS_DEFS, TIDY_DEFS
+import pytest
+import logging
 
 @pytest.fixture
 def test_data():
@@ -92,6 +93,35 @@ def missing_data():
         'term_names': term_names,
         'term_names_with_intercept': term_names_with_intercept,
         'n_samples': n_samples
+    }
+
+@pytest.fixture
+def integer_test_data():
+    """Create test data with integer predictors"""
+    np.random.seed(42)
+    n_samples = 100
+    
+    # Create integer predictors
+    x1 = np.random.randint(0, 10, n_samples)  # integers 0-9
+    x2 = np.random.randint(-5, 5, n_samples)  # integers -5 to 4
+    
+    # Create response as linear combination plus noise
+    y = 2 * x1 - 3 * x2 + np.random.normal(0, 1, n_samples)
+    
+    # Create feature matrix with 2 features
+    X_features = np.column_stack([y, y + 1])  # Two similar features
+    feature_names = ['feature1', 'feature2']
+    
+    # Create predictor DataFrame
+    data = pd.DataFrame({
+        'x1': x1,
+        'x2': x2
+    })
+    
+    return {
+        'X_features': X_features,
+        'data': data,
+        'feature_names': feature_names
     }
 
 def test_fit_feature_model_matrix(test_data):
@@ -444,4 +474,161 @@ def test_fit_parallel_models_formula_validation(test_data):
             formula='z ~ x1 + x2',
             model_class='ols',
             n_jobs=2
-        ) 
+        )
+
+def test_integer_predictors(integer_test_data):
+    """Test that models work with integer predictors"""
+    # Test OLS
+    results_df_ols = mmf.fit_parallel_models_formula(
+        integer_test_data['X_features'],
+        integer_test_data['data'],
+        integer_test_data['feature_names'],
+        formula='~ x1 + x2',
+        model_class='ols',
+        n_jobs=1,
+        allow_failures=False
+    )
+    
+    assert isinstance(results_df_ols, pd.DataFrame)
+    assert len(results_df_ols) > 0
+    
+    # Test GAM
+    results_df_gam = mmf.fit_parallel_models_formula(
+        integer_test_data['X_features'],
+        integer_test_data['data'],
+        integer_test_data['feature_names'],
+        formula='~ x1 + s(x2)',
+        model_class='gam',
+        n_jobs=1,
+        allow_failures=False
+    )
+    
+    assert isinstance(results_df_gam, pd.DataFrame)
+    assert len(results_df_gam) > 0
+
+def test_dtype_handling():
+    """Test handling of different data types in model fitting"""
+    np.random.seed(42)
+    n_samples = 100
+    n_features = 2
+    
+    # Create test data with various dtypes
+    X_features = np.random.randn(n_samples, n_features)
+    
+    # Create DataFrame with problematic dtypes
+    data = pd.DataFrame({
+        'int_col': np.random.randint(0, 10, n_samples),  # integer
+        'float_col': np.random.randn(n_samples),  # float
+        'object_col': pd.Series(np.random.randn(n_samples), dtype='object'),  # object dtype
+        'category_col': pd.Categorical(np.random.choice(['A', 'B'], n_samples)),  # categorical
+        'bool_col': np.random.choice([True, False], n_samples),  # boolean
+        'string_col': np.random.choice(['X', 'Y'], n_samples),  # string
+    })
+    
+    # Print dtypes to help debug
+    print("\nData types in test DataFrame:")
+    print(data.dtypes)
+    
+    feature_names = ['feature1', 'feature2']
+    
+    # Test with different formula combinations
+    formulas = [
+        '~ int_col + float_col',  # numeric only
+        '~ int_col + object_col',  # with object dtype
+        '~ float_col + category_col',  # with categorical
+        '~ int_col + bool_col',  # with boolean
+        '~ float_col + string_col',  # with string
+    ]
+    
+    for formula in formulas:
+        print(f"\nTesting formula: {formula}")
+        try:
+            results = mmf.fit_parallel_models_formula(
+                X_features=X_features,
+                data=data,
+                feature_names=feature_names,
+                formula=formula,
+                model_class='ols',
+                n_jobs=1,
+                allow_failures=False
+            )
+            print(f"Success with formula: {formula}")
+        except Exception as e:
+            print(f"Error with formula {formula}: {str(e)}")
+            print(f"Data types of variables in formula:")
+            for var in formula.split('~')[1].strip().split('+'):
+                var = var.strip()
+                print(f"  {var}: {data[var].dtype}")
+
+def test_model_class_inference():
+    """Test automatic model class inference from formula"""
+    from shackett_utils.statistics import multi_model_fitting as mmf
+    
+    # Test OLS formulas
+    assert mmf._detect_model_class_from_formula('y ~ x1 + x2') == 'ols'
+    assert mmf._detect_model_class_from_formula('~ x1 + x2') == 'ols'
+    assert mmf._detect_model_class_from_formula('x1 + x2') == 'ols'
+    assert mmf._detect_model_class_from_formula('y ~ x1 + x2 + x3 * x4') == 'ols'
+    
+    # Test GAM formulas
+    assert mmf._detect_model_class_from_formula('y ~ s(x1)') == 'gam'
+    assert mmf._detect_model_class_from_formula('y ~ x1 + s(x2)') == 'gam'
+    assert mmf._detect_model_class_from_formula('~ s(x1) + s(x2)') == 'gam'
+    assert mmf._detect_model_class_from_formula('y ~ s(x1) + x2 + s(x3)') == 'gam'
+    assert mmf._detect_model_class_from_formula('y ~ s(x1, k=5) + x2') == 'gam'  # with spline parameters
+    
+    # Test edge cases
+    assert mmf._detect_model_class_from_formula('y ~ x1 + sin(x2)') == 'ols'  # function name containing 's'
+    assert mmf._detect_model_class_from_formula('y ~ x1 + stress(x2)') == 'ols'  # variable name containing 's'
+
+def test_model_class_inference_in_parallel_fitting(test_data, caplog):
+    """Test model class inference in fit_parallel_models_formula"""
+    from shackett_utils.statistics import multi_model_fitting as mmf
+    import logging
+    
+    # Test auto-detection of OLS
+    results_ols = mmf.fit_parallel_models_formula(
+        test_data['X_features'],
+        test_data['data'],
+        test_data['feature_names'],
+        formula='y ~ x1 + x2',
+        n_jobs=1
+    )
+    assert isinstance(results_ols, pd.DataFrame)
+    assert len(results_ols) > 0
+    
+    # Test auto-detection of GAM
+    results_gam = mmf.fit_parallel_models_formula(
+        test_data['X_features'],
+        test_data['data'],
+        test_data['feature_names'],
+        formula='y ~ s(x1) + x2',
+        n_jobs=1
+    )
+    assert isinstance(results_gam, pd.DataFrame)
+    assert len(results_gam) > 0
+    
+    # Test that OLS with smooth terms raises error
+    with pytest.raises(ValueError, match="Cannot fit OLS model with smooth terms"):
+        mmf.fit_parallel_models_formula(
+            test_data['X_features'],
+            test_data['data'],
+            test_data['feature_names'],
+            formula='y ~ s(x1) + x2',
+            model_class='ols',  # Should fail when trying to use OLS with smooth terms
+            n_jobs=1
+        )
+    
+    # Test that GAM with OLS formula works (just a warning)
+    with caplog.at_level(logging.WARNING):
+        results_override = mmf.fit_parallel_models_formula(
+            test_data['X_features'],
+            test_data['data'],
+            test_data['feature_names'],
+            formula='y ~ x1 + x2',  # Linear terms only
+            model_class='gam',  # Override to GAM despite no smooth terms
+            n_jobs=1
+        )
+        assert isinstance(results_override, pd.DataFrame)
+        assert len(results_override) > 0
+        assert "Model class mismatch" in caplog.text 

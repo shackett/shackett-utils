@@ -1,3 +1,4 @@
+import logging
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
@@ -8,6 +9,8 @@ from typing import Union, Optional, Dict, Any, List, Tuple
 import warnings
 from pydantic import BaseModel, field_validator
 from .constants import REQUIRED_TIDY_VARS, TIDY_DEFS, STATISTICS_DEFS
+
+logger = logging.getLogger(__name__)
 
 def _validate_xy_inputs(X: np.ndarray, y: np.ndarray) -> None:
     """Validate model matrix and response vector inputs"""
@@ -150,12 +153,30 @@ class StatisticalModel(ABC):
         return result
 
 class OLSModel(StatisticalModel):
-    """OLS model wrapper"""
+    """OLS model wrapper using statsmodels"""
     
     def fit(self, formula: str, data: pd.DataFrame, **kwargs) -> 'OLSModel':
-        """Fit OLS model using formula"""
+        """Fit OLS model using formula
+        
+        Parameters
+        ----------
+        formula : str
+            Model formula (e.g. 'y ~ x1 + x2')
+            Must include explicit dependent variable.
+        data : pd.DataFrame
+            Data containing the variables
+        **kwargs : dict
+            Additional arguments passed to OLS.fit()
+        """
         self.formula = formula
         self.data = data
+        
+        # Validate formula has dependent variable
+        parts = formula.split('~')
+        if len(parts) != 2 or not parts[0].strip():
+            raise ValueError("Formula must include explicit dependent variable")
+        
+        logger.debug(f"Fitting OLS with formula '{formula}'")
         self.fitted_model = smf.ols(formula, data=data).fit(**kwargs)
         return self
     
@@ -234,15 +255,33 @@ class GAMModel(StatisticalModel):
         self.family = None
     
     def _parse_formula(self, formula: str) -> tuple:
-        """Parse formula string to extract dependent and independent variables"""
+        """Parse formula string to extract dependent and independent variables
+        
+        Parameters
+        ----------
+        formula : str
+            Model formula (e.g. 'y ~ x1 + x2' or 'response ~ x1 + s(x2)')
+            Must include explicit dependent variable.
+            
+        Returns
+        -------
+        tuple
+            (y_var, x_vars, smooth_terms)
+            - y_var: name of response variable from formula
+            - x_vars: list of predictor variable names
+            - smooth_terms: list of variables that should be smoothed
+        """
         parts = formula.split('~')
         if len(parts) != 2:
             raise ValueError("Formula must be in format 'y ~ x1 + x2 + ...'")
         
+        # Get response variable
         y_var = parts[0].strip()
-        x_part = parts[1].strip()
+        if not y_var:
+            raise ValueError("Formula must include explicit dependent variable")
         
-        # Parse terms - handle both linear terms and smooth terms like s(x1)
+        # Parse predictor terms
+        x_part = parts[1].strip()
         raw_terms = [term.strip() for term in x_part.split('+')]
         
         x_vars = []
@@ -259,6 +298,7 @@ class GAMModel(StatisticalModel):
                 # Regular linear term
                 x_vars.append(term)
         
+        logger.debug(f"Parsed formula '{formula}': response='{y_var}', predictors={x_vars}, smooth_terms={smooth_terms}")
         return y_var, x_vars, smooth_terms
     
     def _build_gam_terms(self, x_vars: list, smooth_terms: list) -> list:
@@ -268,13 +308,16 @@ class GAMModel(StatisticalModel):
         terms = []
         for i, var in enumerate(x_vars):
             if var in smooth_terms:
+                logger.debug(f"Adding smooth term s({i}) for variable '{var}'")
                 terms.append(s(i))
             else:
+                logger.debug(f"Adding linear term l({i}) for variable '{var}'")
                 terms.append(l(i))
         return TermList(*terms)
     
-    def fit(self, formula: str, data: pd.DataFrame, family: str = 'gaussian', **kwargs) -> 'GAMModel':
-        """Fit GAM model using formula
+    def fit(self, formula: str, data: pd.DataFrame, family: str = "gaussian", **kwargs) -> 'GAMModel':
+        """
+        Fit GAM using formula interface
         
         Parameters
         ----------
@@ -283,12 +326,14 @@ class GAMModel(StatisticalModel):
         data : pd.DataFrame
             Data containing the variables
         family : str
-            Distribution family for the response variable:
-            - 'gaussian' : Normal distribution (default)
-            - 'binomial' : Logistic regression
-            - 'poisson' : Poisson regression
-            - 'gamma' : Gamma regression
-        **kwargs : additional arguments passed to LinearGAM
+            Distribution family for GAM ('gaussian', 'binomial', etc.)
+        **kwargs : 
+            Additional arguments passed to GAM fitting
+            
+        Returns
+        -------
+        self : GAMModel
+            Fitted model
         """
         from pygam import LinearGAM, LogisticGAM, PoissonGAM, GammaGAM
         
@@ -303,8 +348,9 @@ class GAMModel(StatisticalModel):
         if family not in family_map:
             raise ValueError(f"Unsupported family: {family}. Available: {list(family_map.keys())}")
         
+        # Make a copy to avoid modifying original
+        self.data = data.copy()
         self.formula = formula
-        self.data = data
         self.family = family
         
         # Parse formula
@@ -312,9 +358,23 @@ class GAMModel(StatisticalModel):
         self.term_names = x_vars
         self.smooth_terms = smooth_terms
         
+        # Convert all numeric columns to float64
+        for col in self.data.columns:
+            if pd.api.types.is_numeric_dtype(self.data[col]):
+                self.data[col] = pd.to_numeric(self.data[col], errors='coerce').astype(np.float64)
+            elif pd.api.types.is_categorical_dtype(self.data[col]) or pd.api.types.is_object_dtype(self.data[col]):
+                # Try to convert to numeric if possible
+                try:
+                    self.data[col] = pd.to_numeric(self.data[col], errors='coerce').astype(np.float64)
+                except (ValueError, TypeError):
+                    # If conversion fails, keep as is
+                    pass
+        
         # Extract X and y
-        y = data[y_var].values
-        X = data[x_vars].values
+        y = self.data[y_var].values
+        X = self.data[x_vars].values
+        
+        logger.debug(f"Fitting GAM with X shape {X.shape}, y shape {y.shape}, X dtypes {[X[:, i].dtype for i in range(X.shape[1])]}")
         
         # Build GAM terms
         terms = self._build_gam_terms(x_vars, smooth_terms)
@@ -356,7 +416,7 @@ class GAMModel(StatisticalModel):
                 # For smooth terms, get effective degrees of freedom
                 try:
                     edf = model.statistics_['edof_per_coef'][i] if hasattr(model, 'statistics_') else None
-                    estimate = None
+                    estimate = None  # Smooth terms don't have single coefficients
                     p_value = model.statistics_['p_values'][i] if hasattr(model, 'statistics_') else None
                 except (KeyError, IndexError, AttributeError):
                     edf = None
@@ -368,20 +428,25 @@ class GAMModel(StatisticalModel):
                     'type': 'smooth',
                     'edf': np.float64(edf) if edf is not None else np.nan,
                     'estimate': np.float64(estimate) if estimate is not None else np.nan,
-                    'p_value': np.float64(p_value) if p_value is not None else np.nan
+                    'p_value': np.float64(p_value) if p_value is not None else np.nan,
+                    'std_error': np.nan  # Smooth terms don't have standard errors in the same way
                 })
             else:
-                # For linear terms, try to get coefficient
+                # For linear terms, get coefficient and p-value
                 try:
                     coef = model.coef_[i] if hasattr(model, 'coef_') else None
-                except (IndexError, AttributeError):
+                    p_value = model.statistics_['p_values'][i] if hasattr(model, 'statistics_') else None
+                except (IndexError, AttributeError, KeyError):
                     coef = None
+                    p_value = None
                 
                 terms_info.append({
                     'term': feature_name,
                     'type': 'linear',
                     'estimate': np.float64(coef) if coef is not None else np.nan,
-                    'edf': np.float64(1.0)
+                    'edf': np.float64(1.0),  # Linear terms have 1 degree of freedom
+                    'p_value': np.float64(p_value) if p_value is not None else np.nan,
+                    'std_error': np.nan  # GAM doesn't provide standard errors in the same way as OLS
                 })
         
         tidy_df = pd.DataFrame(terms_info)
