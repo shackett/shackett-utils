@@ -4,6 +4,7 @@ import numpy as np
 
 from shackett_utils.statistics import model_fitting
 from shackett_utils.statistics.model_fitting import _validate_tidy_df
+from shackett_utils.statistics.constants import STATISTICS_DEFS
 
 @pytest.fixture
 def test_data():
@@ -322,3 +323,52 @@ def test_validate_tidy_df():
         'conf_high': [1.2]
     })
     _validate_tidy_df(valid_df)  # Should not raise
+
+def test_model_identifiers():
+    """Test feature_name and model_name are correctly passed and ordered"""
+    # Create test data
+    X = np.array([[1, 2], [3, 4], [5, 6]])
+    y = np.array([1, 2, 3])
+    term_names = ['x1', 'x2']
+    
+    # Test OLS model with both identifiers
+    model = model_fitting.OLSModel(feature_name='test_feature', model_name='test_model')
+    model.fit_xy(X, y, term_names=term_names)
+    
+    # Test tidy output
+    tidy_df = model.tidy()
+    assert list(tidy_df.columns[:3]) == [STATISTICS_DEFS.MODEL_NAME, STATISTICS_DEFS.TERM, STATISTICS_DEFS.FEATURE_NAME]
+    assert tidy_df[STATISTICS_DEFS.MODEL_NAME].unique() == ['test_model']
+    assert tidy_df[STATISTICS_DEFS.FEATURE_NAME].unique() == ['test_feature']
+    
+    # Test glance output
+    glance_df = model.glance()
+    assert list(glance_df.columns[:2]) == [STATISTICS_DEFS.MODEL_NAME, STATISTICS_DEFS.FEATURE_NAME]
+    assert glance_df[STATISTICS_DEFS.MODEL_NAME].unique() == ['test_model']
+    assert glance_df[STATISTICS_DEFS.FEATURE_NAME].unique() == ['test_feature']
+    
+    # Test augment output
+    augment_df = model.augment()
+    assert list(augment_df.columns[:2]) == [STATISTICS_DEFS.MODEL_NAME, STATISTICS_DEFS.FEATURE_NAME]
+    assert augment_df[STATISTICS_DEFS.MODEL_NAME].unique() == ['test_model']
+    assert augment_df[STATISTICS_DEFS.FEATURE_NAME].unique() == ['test_feature']
+    
+    # Test with only feature_name
+    model_feature_only = model_fitting.OLSModel(feature_name='test_feature')
+    model_feature_only.fit_xy(X, y, term_names=term_names)
+    tidy_feature_only = model_feature_only.tidy()
+    assert STATISTICS_DEFS.MODEL_NAME not in tidy_feature_only.columns
+    assert list(tidy_feature_only.columns[:2]) == [STATISTICS_DEFS.TERM, STATISTICS_DEFS.FEATURE_NAME]
+    
+    # Test with only model_name
+    model_name_only = model_fitting.OLSModel(model_name='test_model')
+    model_name_only.fit_xy(X, y, term_names=term_names)
+    tidy_name_only = model_name_only.tidy()
+    assert list(tidy_name_only.columns[:2]) == [STATISTICS_DEFS.MODEL_NAME, STATISTICS_DEFS.TERM]
+    
+    # Test with formula interface
+    data = pd.DataFrame({'x1': [1, 3, 5], 'x2': [2, 4, 6], 'y': [1, 2, 3]})
+    model_formula = model_fitting.OLSModel(feature_name='test_feature', model_name='test_model')
+    model_formula.fit('y ~ x1 + x2', data)
+    tidy_formula = model_formula.tidy()
+    assert list(tidy_formula.columns[:3]) == [STATISTICS_DEFS.MODEL_NAME, STATISTICS_DEFS.TERM, STATISTICS_DEFS.FEATURE_NAME]

@@ -4,8 +4,9 @@ import statsmodels.api as sm
 import statsmodels.formula.api as smf
 from pygam import LinearGAM, s
 from abc import ABC, abstractmethod
-from typing import Union, Optional, Dict, Any, List
+from typing import Union, Optional, Dict, Any, List, Tuple
 import warnings
+from pydantic import BaseModel, field_validator
 from .constants import REQUIRED_TIDY_VARS, TIDY_DEFS, STATISTICS_DEFS
 
 def _validate_xy_inputs(X: np.ndarray, y: np.ndarray) -> None:
@@ -62,12 +63,40 @@ class StatisticalModel(ABC):
         self._y = None
     
     def _add_identifiers(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add feature and model identifiers to output dataframes if present"""
+        """
+        Add feature and model identifiers to output dataframes if present.
+        Ensures consistent column ordering with identifiers first.
+        
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame to add identifiers to
+            
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with identifiers added and columns reordered
+        """
+        # Add identifiers if present
+        if self.model_name is not None:
+            df[STATISTICS_DEFS.MODEL_NAME] = self.model_name
         if self.feature_name is not None:
             df[STATISTICS_DEFS.FEATURE_NAME] = self.feature_name
-        if self.model_name is not None:
-            df[TIDY_DEFS.MODEL_NAME] = self.model_name
-        return df
+        
+        # Define column order
+        identifier_cols = []
+        if STATISTICS_DEFS.MODEL_NAME in df.columns:
+            identifier_cols.append(STATISTICS_DEFS.MODEL_NAME)
+        if STATISTICS_DEFS.TERM in df.columns:
+            identifier_cols.append(STATISTICS_DEFS.TERM)
+        if STATISTICS_DEFS.FEATURE_NAME in df.columns:
+            identifier_cols.append(STATISTICS_DEFS.FEATURE_NAME)
+        
+        # Get remaining columns in their current order
+        other_cols = [col for col in df.columns if col not in identifier_cols]
+        
+        # Reorder columns
+        return df[identifier_cols + other_cols]
         
     @abstractmethod
     def fit(self, formula: str, data: pd.DataFrame, **kwargs) -> 'StatisticalModel':
@@ -155,14 +184,15 @@ class OLSModel(StatisticalModel):
         else:
             terms = self.term_names
         
+        # Ensure all numeric values are float64
         tidy_df = pd.DataFrame({
             'term': terms,
-            'estimate': params,
-            'std_error': self.fitted_model.bse,
-            'statistic': self.fitted_model.tvalues,
-            'p_value': self.fitted_model.pvalues,
-            'conf_low': conf_int[:, 0] if isinstance(conf_int, np.ndarray) else conf_int.iloc[:, 0],
-            'conf_high': conf_int[:, 1] if isinstance(conf_int, np.ndarray) else conf_int.iloc[:, 1]
+            'estimate': np.asarray(params, dtype=np.float64),
+            'std_error': np.asarray(self.fitted_model.bse, dtype=np.float64),
+            'statistic': np.asarray(self.fitted_model.tvalues, dtype=np.float64),
+            'p_value': np.asarray(self.fitted_model.pvalues, dtype=np.float64),
+            'conf_low': np.asarray(conf_int[:, 0] if isinstance(conf_int, np.ndarray) else conf_int.iloc[:, 0], dtype=np.float64),
+            'conf_high': np.asarray(conf_int[:, 1] if isinstance(conf_int, np.ndarray) else conf_int.iloc[:, 1], dtype=np.float64)
         })
         
         # Add feature and model name if present
@@ -326,16 +356,19 @@ class GAMModel(StatisticalModel):
                 # For smooth terms, get effective degrees of freedom
                 try:
                     edf = model.statistics_['edof_per_coef'][i] if hasattr(model, 'statistics_') else None
+                    estimate = None
                     p_value = model.statistics_['p_values'][i] if hasattr(model, 'statistics_') else None
                 except (KeyError, IndexError, AttributeError):
                     edf = None
+                    estimate = None
                     p_value = None
                 
                 terms_info.append({
                     'term': f's({feature_name})',
                     'type': 'smooth',
-                    'edf': edf,
-                    'p_value': p_value
+                    'edf': np.float64(edf) if edf is not None else np.nan,
+                    'estimate': np.float64(estimate) if estimate is not None else np.nan,
+                    'p_value': np.float64(p_value) if p_value is not None else np.nan
                 })
             else:
                 # For linear terms, try to get coefficient
@@ -347,8 +380,8 @@ class GAMModel(StatisticalModel):
                 terms_info.append({
                     'term': feature_name,
                     'type': 'linear',
-                    'estimate': coef,
-                    'edf': 1.0
+                    'estimate': np.float64(coef) if coef is not None else np.nan,
+                    'edf': np.float64(1.0)
                 })
         
         tidy_df = pd.DataFrame(terms_info)

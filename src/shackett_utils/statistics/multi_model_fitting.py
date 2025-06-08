@@ -1,9 +1,12 @@
+from joblib import Parallel, delayed
+import logging
+import re
 from typing import List, Dict, Any, Optional, Callable, Union
+
 import numpy as np
 import pandas as pd
-from joblib import Parallel, delayed
 import statsmodels.stats.multitest as multitest
-import logging
+
 from .model_fitting import StatisticalModel, OLSModel, GAMModel, _validate_tidy_df
 from .constants import REQUIRED_TIDY_VARS, STATISTICS_DEFS, MULTITEST_GROUPING_VARS, FDR_METHODS_DEFS, FDR_METHODS, TIDY_DEFS
 
@@ -182,6 +185,28 @@ def _validate_tidy_df(df: pd.DataFrame) -> None:
     if missing_cols:
         raise ValueError(f"Tidy DataFrame missing required columns: {missing_cols}")
 
+def _apply_fdr_correction(df: pd.DataFrame, mask: pd.Series, fdr_method: str) -> None:
+    """
+    Apply FDR correction to a subset of p-values and assign q-values in-place.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing p-values to correct
+    mask : pd.Series
+        Boolean mask indicating which rows to correct
+    fdr_method : str
+        FDR method to use
+    """
+    p_values = df.loc[mask, STATISTICS_DEFS.P_VALUE].values
+    if len(p_values) > 0:  # Only perform correction if we have p-values
+        df.loc[mask, STATISTICS_DEFS.Q_VALUE] = multitest.multipletests(
+            p_values, 
+            method=fdr_method
+        )[1]
+    else:
+        df.loc[mask, STATISTICS_DEFS.Q_VALUE] = np.nan
+
 def control_fdr(results_df: pd.DataFrame, fdr_method: str = FDR_METHODS_DEFS.FDR_BH) -> pd.DataFrame:
     """
     Apply FDR control to p-values, grouping by term and model_name (if present).
@@ -211,34 +236,40 @@ def control_fdr(results_df: pd.DataFrame, fdr_method: str = FDR_METHODS_DEFS.FDR
     
     # Determine grouping columns based on available columns
     group_cols = [col for col in MULTITEST_GROUPING_VARS if col in results_df.columns]
+    
     if len(group_cols) > 1:
         logger.info(f"Applying FDR control within groups: {', '.join(group_cols)}")
+        # Apply correction within each group
+        for _, group in results_df.groupby(group_cols):
+            mask = results_df.index.isin(group.index)
+            _apply_fdr_correction(results_df, mask, fdr_method)
     else:
-        logger.info(f"Applying FDR control within {group_cols[0]} groups")
-    
-    # Group by specified columns and calculate FDR-corrected p-values
-    for _, group in results_df.groupby(group_cols):
-        mask = results_df.index.isin(group.index)
-        p_values = group[STATISTICS_DEFS.P_VALUE].values
-        if len(p_values) > 0:  # Only perform correction if we have p-values
-            results_df.loc[mask, STATISTICS_DEFS.Q_VALUE] = multitest.multipletests(
-                p_values, 
-                method=fdr_method
-            )[1]
+        if group_cols:
+            logger.info(f"Applying FDR control within {group_cols[0]} groups")
+            # Use single column without list to avoid pandas warning
+            for _, group in results_df.groupby(group_cols[0]):
+                mask = results_df.index.isin(group.index)
+                _apply_fdr_correction(results_df, mask, fdr_method)
         else:
-            results_df.loc[mask, STATISTICS_DEFS.Q_VALUE] = np.nan
+            logger.info("Applying FDR control globally (no grouping columns found)")
+            # Apply correction to all p-values at once
+            _apply_fdr_correction(results_df, pd.Series(True, index=results_df.index), fdr_method)
     
     return results_df
 
-def _validate_formula(formula: str) -> str:
+def _validate_formula(formula: str, data: Optional[pd.DataFrame] = None) -> str:
     """
-    Validate and standardize model formula to ensure 'y' is the dependent variable.
+    Validate and standardize model formula to ensure 'y' is the dependent variable
+    and all variables are numeric.
     
     Parameters
     ----------
     formula : str
         Model formula to validate. Can be either a full formula (e.g. 'y ~ x1 + x2')
         or a right-hand side only (e.g. '~ x1 + x2' or 'x1 + x2').
+    data : Optional[pd.DataFrame]
+        DataFrame containing the variables referenced in the formula.
+        If provided, checks that all variables are numeric.
         
     Returns
     -------
@@ -248,7 +279,8 @@ def _validate_formula(formula: str) -> str:
     Raises
     ------
     ValueError
-        If formula is invalid or uses a dependent variable other than 'y'
+        If formula is invalid, uses a dependent variable other than 'y',
+        or contains non-numeric variables
     """
     formula = formula.strip()
     
@@ -262,10 +294,35 @@ def _validate_formula(formula: str) -> str:
     # Has one '~', check if it starts with '~' or has a dependent variable
     lhs = parts[0].strip()
     if not lhs or lhs == 'y':  # Empty left side means formula started with '~'
-        return f"y ~ {parts[1].strip()}"
+        formula = f"y ~ {parts[1].strip()}"
     else:
         raise ValueError(f"Formula must use 'y' as dependent variable, got '{lhs}'")
     
+    # If data is provided, check that all variables are numeric
+    if data is not None:
+        # Extract variable names from formula, including those in function calls
+        rhs = parts[1].strip()
+        variables = set()
+        
+        # First extract variables inside function calls like s()
+        func_vars = re.findall(r'\w+\(([^)]+)\)', rhs)
+        for var in func_vars:
+            variables.add(var.strip())
+        
+        # Then remove function calls and extract remaining variables
+        rhs = re.sub(r'\w+\([^)]*\)', '', rhs)
+        # Split on operators and get unique variables
+        variables.update(var.strip() for var in re.split(r'[+\-*/]', rhs) if var.strip())
+        
+        # Check each variable
+        for var in variables:
+            if var not in data.columns:
+                raise ValueError(f"Variable '{var}' not found in data")
+            if not np.issubdtype(data[var].dtype, np.number):
+                raise ValueError(f"Variable '{var}' must be numeric, got dtype {data[var].dtype}")
+    
+    return formula
+
 def fit_parallel_models_formula(
     X_features: np.ndarray,
     data: pd.DataFrame,

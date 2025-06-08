@@ -6,21 +6,13 @@ import os
 from typing import List, Optional, Tuple, Dict, Union, Any
 import logging
 
-from anndata import AnnData
-import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from mudata import MuData
-import seaborn as sns
-import scipy.sparse as sp
-from scipy.stats import kstest
-import statsmodels.api as sm
-import statsmodels.formula.api as smf
 
-from shackett_utils.genomics.adata_utils import get_adata_features_and_data
-from ..statistics.multi_model_fitting import fit_parallel_models_formula
-from ..statistics.constants import STATISTICS_DEFS, TIDY_DEFS
+from anndata import AnnData
 
+from shackett_utils.genomics import adata_utils
+from shackett_utils.statistics import multi_model_fitting
+from shackett_utils.statistics.constants import STATISTICS_DEFS, TIDY_DEFS
 
 def adata_model_fitting(
     adata: AnnData,
@@ -29,7 +21,9 @@ def adata_model_fitting(
     model_class: str = 'ols',
     n_jobs: int = -1,
     batch_size: int = 100,
+    model_name: Optional[str] = None,
     progress_bar: bool = True,
+    fdr_control: bool = True,
     **model_kwargs
 ) -> pd.DataFrame:
     """
@@ -51,8 +45,12 @@ def adata_model_fitting(
         Number of parallel jobs. -1 means using all processors.
     batch_size : int
         Number of features to process in each batch.
+    model_name : Optional[str]
+        Name of the model for the output dataframe.
     progress_bar : bool
         Whether to display a progress bar.
+    fdr_control : bool
+        Whether to apply FDR control to the p-values.
     **model_kwargs : 
         Additional arguments passed to model fitting
         
@@ -62,22 +60,19 @@ def adata_model_fitting(
         DataFrame with regression statistics for each feature.
     """
         
-    # Create feature formula if needed (for GAM)
-    feature_formula = None
-    if model_class.lower() == 'gam':
-        feature_formula = 'y ~ ' + ' + '.join(coefficient_names[1:])  # Skip intercept
-    
-    # Run parallel model fitting
-    return fit_parallel_models(
-        X_features=X_features,
-        X_model=X_model,
-        feature_names=feature_names,
-        model_class=model_class,
-        formula=feature_formula,
-        coefficient_names=coefficient_names,
-        n_jobs=n_jobs,
-        batch_size=batch_size,
-        progress_bar=progress_bar,
+    feature_names, data_matrix = adata_utils.get_adata_features_and_data(adata, layer = layer)
+
+    return multi_model_fitting.fit_parallel_models_formula(
+        X_features = data_matrix,
+        data = adata.obs,
+        feature_names = feature_names,
+        formula = formula,
+        model_class = model_class,
+        n_jobs = n_jobs,
+        batch_size = batch_size,
+        model_name = model_name,
+        fdr_control = fdr_control,
+        progress_bar = progress_bar,
         **model_kwargs
     )
 
@@ -219,228 +214,3 @@ def add_regression_results_to_anndata(
             )
     
     return None if inplace else adata
-
-
-def plot_pvalue_histograms(
-    data: Union[AnnData, MuData],
-    regression_key: str = "regression_results",
-    output_dir: Optional[str] = None,
-    figsize: Tuple[int, int] = (12, 8),
-    include_stats: bool = True,
-    show_ks_test: bool = True,
-    fdr_cutoff: float = 0.05,
-    terms: Optional[list] = None
-) -> Dict[str, Dict[str, plt.Figure]]:
-    """
-    Generate histograms of p-values and FDR-corrected p-values for all coefficients 
-    in regression results stored in AnnData or MuData objects.
-    Optionally, only plot for a subset of coefficients/terms if 'terms' is provided.
-    
-    Parameters
-    ----------
-    data : Union[anndata.AnnData, mudata.MuData]
-        The annotated data matrix or multi-modal data object containing regression results.
-    regression_key : str, optional
-        Key under which regression results are stored in .uns. Default is "regression_results".
-    output_dir : Optional[str], optional
-        Directory to save histogram plots. If None, plots are displayed but not saved.
-    figsize : Tuple[int, int], optional
-        Figure size (width, height) in inches. Default is (12, 8).
-    include_stats : bool, optional
-        Whether to include summary statistics on the plots. Default is True.
-    show_ks_test : bool, optional
-        Whether to show Kolmogorov-Smirnov test results comparing p-value distribution
-        to the uniform distribution. Default is True.
-    fdr_cutoff : float, optional
-        Significance threshold for FDR-corrected p-values. Default is 0.05.
-    terms : list, optional
-        List of coefficient names/terms to plot. If None, plot all coefficients.
-    
-    Returns
-    -------
-    Dict[str, Dict[str, plt.Figure]]
-        Dictionary of generated figures indexed by modality and coefficient.
-    """
-    # Set plot style
-    sns.set_style("whitegrid")
-    plt.rcParams.update({'font.size': 12})
-    
-    # Initialize dictionary to store figure objects
-    figures: Dict[str, Dict[str, plt.Figure]] = {}
-    
-    # Set up logger
-    logger = logging.getLogger(__name__)
-    
-    # Function to process a single AnnData object
-    def process_anndata(
-        adata: AnnData, 
-        modality_name: Optional[str] = None,
-        terms=terms  # capture from outer scope
-    ) -> Dict[str, plt.Figure]:
-        # Check if regression results exist
-        if regression_key not in adata.uns:
-            print(f"No regression results found under key '{regression_key}'"
-                  f"{' in modality ' + modality_name if modality_name else ''}.")
-            return {}
-        
-        # Get regression results
-        regression_results = adata.uns[regression_key]
-        
-        # Convert results to DataFrame if needed
-        if isinstance(regression_results, dict) and "results" in regression_results:
-            results_df = pd.DataFrame(regression_results["results"])
-        elif isinstance(regression_results, pd.DataFrame):
-            results_df = regression_results
-        else:
-            print(f"Unexpected format for regression results" 
-                  f"{' in modality ' + modality_name if modality_name else ''}.")
-            return {}
-        
-        mod_figures: Dict[str, plt.Figure] = {}
-        
-        # Get unique coefficients
-        coefficients: List[str] = results_df["coefficient"].unique().tolist()
-        # If terms is provided, filter coefficients
-        if terms is not None:
-            # Support string input as a single term
-            if isinstance(terms, str):
-                terms = [terms]
-            missing_terms = [t for t in terms if t not in coefficients]
-            found_terms = [t for t in terms if t in coefficients]
-            if len(found_terms) == 0:
-                raise ValueError("None of the specified terms were found in the regression results.")
-            if missing_terms:
-                logger.warning(f"The following terms were not found in the regression results and will be skipped: {missing_terms}")
-            coefficients = found_terms
-        
-        for coef in coefficients:
-            coef_results = results_df[results_df["coefficient"] == coef]
-            fig = _plot_single_term_pvalue_histograms(
-                coef_results=coef_results,
-                coef=coef,
-                modality_name=modality_name,
-                include_stats=include_stats,
-                show_ks_test=show_ks_test,
-                fdr_cutoff=fdr_cutoff,
-                output_dir=output_dir,
-                figsize=figsize
-            )
-            mod_figures[coef] = fig
-        
-        return mod_figures
-    
-    # Check if input is MuData or AnnData
-    if hasattr(data, 'mod'):  # MuData object
-        for modality in data.mod:
-            print(f"Processing {modality}...")
-            mod_figures = process_anndata(data[modality], modality_name=modality)
-            if mod_figures:
-                figures[modality] = mod_figures
-    else:  # AnnData object
-        figures['anndata'] = process_anndata(data)
-    
-    # Display figures if not saving
-    if output_dir is None:
-        for modality in figures:
-            for coef in figures[modality]:
-                plt.figure(figures[modality][coef].number)
-                plt.show()
-    
-    print("Histogram generation complete.")
-    return figures
-
-
-def _plot_single_term_pvalue_histograms(
-    coef_results: pd.DataFrame,
-    coef: str,
-    modality_name: Optional[str],
-    include_stats: bool,
-    show_ks_test: bool,
-    fdr_cutoff: float,
-    output_dir: Optional[str],
-    figsize: Tuple[int, int]
-) -> plt.Figure:
-    """
-    Utility to plot p-value histograms and QQ plots for a single coefficient/term.
-    Returns the matplotlib Figure.
-    """
-    n_panels = 3 if STATISTICS_DEFS.Q_VALUE in coef_results.columns else 2
-    fig, axes = plt.subplots(1, n_panels, figsize=(figsize[0]*n_panels/2, figsize[1]))
-    fig.suptitle(f"P-value Distribution for Coefficient: {coef}" +
-                 (f" in {modality_name}" if modality_name else ""),
-                 fontsize=16)
-
-    # Raw p-values
-    sns.histplot(coef_results[STATISTICS_DEFS.P_VALUE], bins=20, kde=True, ax=axes[0])
-    axes[0].set_title("Raw P-values")
-    axes[0].set_xlabel("P-value")
-    axes[0].set_ylabel("Count")
-
-    # Add reference uniform distribution line
-    x = np.linspace(0, 1, 100)
-    y = len(coef_results) * 0.05  # Adjust height based on data
-    axes[0].plot(x, [y] * 100, 'r--', label='Uniform Distribution')
-    axes[0].legend()
-
-    # Add summary statistics
-    if include_stats:
-        avg_p = coef_results[STATISTICS_DEFS.P_VALUE].mean()
-        median_p = coef_results[STATISTICS_DEFS.P_VALUE].median()
-        sig_count = sum(coef_results[STATISTICS_DEFS.P_VALUE] < 0.05)
-        sig_pct = 100 * sig_count / len(coef_results)
-        stats_text = f"Mean: {avg_p:.4f}\nMedian: {median_p:.4f}\n"
-        stats_text += f"Significant: {sig_count}/{len(coef_results)} ({sig_pct:.1f}%)"
-        axes[0].text(0.05, 0.95, stats_text,
-                     transform=axes[0].transAxes,
-                     verticalalignment='top',
-                     bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-
-    # QQ plot of p-values
-    pvals = np.sort(coef_results[STATISTICS_DEFS.P_VALUE])
-    expected = np.linspace(0, 1, len(pvals) + 1)[1:]
-    axes[1].scatter(expected, pvals, alpha=0.5)
-    axes[1].plot([0, 1], [0, 1], 'r--')
-    axes[1].set_title("P-value QQ Plot")
-    axes[1].set_xlabel("Expected P-value")
-    axes[1].set_ylabel("Observed P-value")
-
-    # FDR-corrected p-values (if available)
-    if n_panels == 3:
-        sns.histplot(coef_results[STATISTICS_DEFS.Q_VALUE], bins=20, kde=True, ax=axes[2])
-        axes[2].set_title("FDR-corrected P-values (Benjamini-Hochberg)")
-        axes[2].set_xlabel("Adjusted P-value")
-        axes[2].set_ylabel("Count")
-        axes[2].plot(x, [y] * 100, 'r--', label='Uniform Distribution')
-        axes[2].legend()
-        if include_stats:
-            avg_fdr = coef_results[STATISTICS_DEFS.Q_VALUE].mean()
-            median_fdr = coef_results[STATISTICS_DEFS.Q_VALUE].median()
-            sig_count_fdr = sum(coef_results[STATISTICS_DEFS.Q_VALUE] < fdr_cutoff)
-            sig_pct_fdr = 100 * sig_count_fdr / len(coef_results)
-            stats_text = f"Mean: {avg_fdr:.4f}\nMedian: {median_fdr:.4f}\n"
-            stats_text += f"Significant: {sig_count_fdr}/{len(coef_results)} ({sig_pct_fdr:.1f}%)"
-            axes[2].text(0.05, 0.95, stats_text,
-                         transform=axes[2].transAxes,
-                         verticalalignment='top',
-                         bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-
-    # KS test
-    if show_ks_test:
-        ks_stat, ks_pval = kstest(coef_results[STATISTICS_DEFS.P_VALUE], 'uniform')
-        fig.text(0.5, 0.01,
-                 f"Kolmogorov-Smirnov test against uniform distribution: "
-                 f"statistic={ks_stat:.4f}, p-value={ks_pval:.4f}",
-                 ha='center', fontsize=12)
-
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-
-    # Save figure if output_dir is provided
-    if output_dir is not None:
-        mod_dir = os.path.join(output_dir, modality_name if modality_name else "anndata")
-        os.makedirs(mod_dir, exist_ok=True)
-        safe_coef = coef.replace(" ", "_").replace("/", "_").replace("\\", "_")
-        file_path = os.path.join(mod_dir, f"pvalue_hist_{safe_coef}.png")
-        fig.savefig(file_path, dpi=300, bbox_inches='tight')
-        print(f"Saved histogram to {file_path}")
-
-    return fig

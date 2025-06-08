@@ -11,22 +11,22 @@ def test_data():
     n_samples = 100
     n_features = 5
     
-    # Create features with known relationships
-    X_features = np.random.randn(n_samples, n_features)
-    X_model = np.random.randn(n_samples, 2)  # Two predictors
+    # Create features with known relationships using explicit dtype
+    X_features = np.random.randn(n_samples, n_features).astype(np.float64)
+    X_model = np.random.randn(n_samples, 2).astype(np.float64)  # Two predictors
     
     # Create response with known relationships
     y = 1.0 + 2.0 * X_model[:, 0] + 0.5 * X_model[:, 1] + np.random.normal(0, 0.1, n_samples)
     X_features[:, 0] = y  # First feature has strong relationship
     
-    # Create DataFrame for formula interface
-    data = pd.DataFrame(X_model, columns=['x1', 'x2'])
+    # Create DataFrame for formula interface with explicit dtype
+    data = pd.DataFrame(X_model, columns=['x1', 'x2']).astype(np.float64)
     
     feature_names = [f'feature_{i}' for i in range(n_features)]
     term_names = ['x1', 'x2']
     
     # Add intercept to X_model for matrix interface
-    X_model_with_intercept = np.column_stack([np.ones(n_samples), X_model])
+    X_model_with_intercept = np.column_stack([np.ones(n_samples, dtype=np.float64), X_model])
     term_names_with_intercept = ['intercept'] + term_names
     
     return {
@@ -44,9 +44,9 @@ def test_data():
 def zero_var_data():
     """Create test data with zero variance features"""
     n_samples = 10
-    X_features = np.zeros((n_samples, 2))  # All zero variance
-    X_model = np.random.randn(n_samples, 2)
-    X_model_with_intercept = np.column_stack([np.ones(n_samples), X_model])
+    X_features = np.zeros((n_samples, 2), dtype=np.float64)  # All zero variance
+    X_model = np.random.randn(n_samples, 2).astype(np.float64)
+    X_model_with_intercept = np.column_stack([np.ones(n_samples, dtype=np.float64), X_model])
     
     return {
         'X_features': X_features,
@@ -64,10 +64,10 @@ def missing_data():
     np.random.seed(42)
     n_samples = 20
     
-    # Create data with missing values
-    X_features = np.random.randn(n_samples, 3)
-    X_model = np.random.randn(n_samples, 2)
-    data = pd.DataFrame(X_model, columns=['x1', 'x2'])
+    # Create data with missing values using explicit dtype
+    X_features = np.random.randn(n_samples, 3).astype(np.float64)
+    X_model = np.random.randn(n_samples, 2).astype(np.float64)
+    data = pd.DataFrame(X_model, columns=['x1', 'x2']).astype(np.float64)
     
     # Add missing values to different features
     X_features[0:5, 0] = np.nan  # 5 missing at start
@@ -80,7 +80,7 @@ def missing_data():
     term_names = ['x1', 'x2']
     
     # Add intercept to X_model for matrix interface
-    X_model_with_intercept = np.column_stack([np.ones(n_samples), X_model])
+    X_model_with_intercept = np.column_stack([np.ones(n_samples, dtype=np.float64), X_model])
     term_names_with_intercept = ['intercept'] + term_names
     
     return {
@@ -383,7 +383,32 @@ def test_formula_validation():
     
     # Test formula with extra whitespace
     assert mmf._validate_formula("  y  ~  x1  +  x2  ") == "y ~ x1  +  x2"
-    assert mmf._validate_formula("  ~  x1  +  x2  ") == "y ~ x1  +  x2"
+    
+    # Test numeric validation
+    data = pd.DataFrame({
+        'y': [1, 2, 3],
+        'x1': [4, 5, 6],
+        'x2': [7, 8, 9],
+        'cat': ['a', 'b', 'c']
+    })
+    
+    # Valid numeric variables
+    assert mmf._validate_formula("y ~ x1 + x2", data) == "y ~ x1 + x2"
+    
+    # Invalid categorical variable
+    with pytest.raises(ValueError, match="must be numeric"):
+        mmf._validate_formula("y ~ x1 + cat", data)
+    
+    # Missing variable
+    with pytest.raises(ValueError, match="not found in data"):
+        mmf._validate_formula("y ~ x1 + x3", data)
+    
+    # Test with smooth terms
+    assert mmf._validate_formula("y ~ s(x1) + x2", data) == "y ~ s(x1) + x2"
+    
+    # Test with smooth terms and invalid variable
+    with pytest.raises(ValueError, match="must be numeric"):
+        mmf._validate_formula("y ~ s(cat) + x2", data)
 
 def test_fit_parallel_models_formula_validation(test_data):
     """Test formula validation in fit_parallel_models_formula"""
