@@ -2,6 +2,7 @@ import pytest
 import numpy as np
 import pandas as pd
 from shackett_utils.statistics import multi_model_fitting as mmf
+from shackett_utils.statistics.constants import STATISTICS_DEFS
 
 @pytest.fixture
 def test_data():
@@ -54,6 +55,42 @@ def zero_var_data():
         'feature_names': ['f1', 'f2'],
         'term_names': ['x1', 'x2'],
         'term_names_with_intercept': ['intercept', 'x1', 'x2'],
+        'n_samples': n_samples
+    }
+
+@pytest.fixture
+def missing_data():
+    """Create test data with missing values"""
+    np.random.seed(42)
+    n_samples = 20
+    
+    # Create data with missing values
+    X_features = np.random.randn(n_samples, 3)
+    X_model = np.random.randn(n_samples, 2)
+    data = pd.DataFrame(X_model, columns=['x1', 'x2'])
+    
+    # Add missing values to different features
+    X_features[0:5, 0] = np.nan  # 5 missing at start
+    X_features[15:, 1] = np.nan  # 5 missing at end
+    # Make middle feature fail by having perfect collinearity
+    X_features[::2, 2] = np.nan  # Every other sample is missing
+    X_features[1::2, 2] = 1.0  # All non-missing values are identical
+    
+    feature_names = ['missing_start', 'missing_end', 'missing_middle']
+    term_names = ['x1', 'x2']
+    
+    # Add intercept to X_model for matrix interface
+    X_model_with_intercept = np.column_stack([np.ones(n_samples), X_model])
+    term_names_with_intercept = ['intercept'] + term_names
+    
+    return {
+        'data': data,
+        'X_features': X_features,
+        'X_model': X_model,
+        'X_model_with_intercept': X_model_with_intercept,
+        'feature_names': feature_names,
+        'term_names': term_names,
+        'term_names_with_intercept': term_names_with_intercept,
         'n_samples': n_samples
     }
 
@@ -114,7 +151,7 @@ def test_fit_parallel_models_matrix(test_data):
     # Each feature should have results for each term
     expected_rows = len(test_data['feature_names']) * len(test_data['term_names_with_intercept'])
     assert len(results_df) == expected_rows
-    assert all(col in results_df.columns for col in ['feature', 'term', 'estimate', 'p_value', 'fdr_bh'])
+    assert all(col in results_df.columns for col in ['feature', STATISTICS_DEFS.TERM, 'estimate', STATISTICS_DEFS.P_VALUE, STATISTICS_DEFS.Q_VALUE])
 
 def test_fit_parallel_models_formula(test_data):
     """Test parallel formula-based fitting"""
@@ -130,7 +167,7 @@ def test_fit_parallel_models_formula(test_data):
     
     assert isinstance(results_df_ols, pd.DataFrame)
     assert len(results_df_ols) > 0
-    assert all(col in results_df_ols.columns for col in ['feature', 'term', 'estimate', 'p_value', 'fdr_bh'])
+    assert all(col in results_df_ols.columns for col in ['feature', STATISTICS_DEFS.TERM, 'estimate', STATISTICS_DEFS.P_VALUE, STATISTICS_DEFS.Q_VALUE])
     
     # Test GAM
     results_df_gam = mmf.fit_parallel_models_formula(
@@ -144,7 +181,7 @@ def test_fit_parallel_models_formula(test_data):
     
     assert isinstance(results_df_gam, pd.DataFrame)
     assert len(results_df_gam) > 0
-    assert all(col in results_df_gam.columns for col in ['feature', 'term'])
+    assert all(col in results_df_gam.columns for col in ['feature', STATISTICS_DEFS.TERM])
 
 def test_zero_variance_features(zero_var_data):
     """Test handling of zero variance features"""
@@ -172,10 +209,101 @@ def test_zero_variance_features(zero_var_data):
     assert isinstance(results_formula, pd.DataFrame)
     assert len(results_formula) == 0
 
+def test_missing_values_formula(missing_data, caplog):
+    """Test handling of missing values in formula interface"""
+    caplog.set_level('DEBUG')
+    
+    # Test single feature with missing values
+    results = mmf.fit_feature_model_formula(
+        missing_data['X_features'][:, 0],
+        missing_data['data'],
+        missing_data['feature_names'][0],
+        formula='y ~ x1 + x2',
+        model_class='ols'
+    )
+    
+    assert isinstance(results, pd.DataFrame)
+    assert len(results) > 0
+    assert "Filtering 5 missing values" in caplog.text
+    
+    # Test parallel fitting with different missing value patterns
+    results_all = mmf.fit_parallel_models_formula(
+        missing_data['X_features'],
+        missing_data['data'],
+        missing_data['feature_names'],
+        formula='y ~ x1 + x2',
+        model_class='ols'
+    )
+    
+    assert isinstance(results_all, pd.DataFrame)
+    assert len(results_all) > 0
+    # Should have results for features with sufficient data
+    assert len(set(results_all['feature'].unique()) & set(['missing_start', 'missing_end'])) == 2
+    # Feature with too many missing values should be skipped
+    assert 'missing_middle' not in results_all['feature'].unique()
+
+def test_missing_values_matrix(missing_data, caplog):
+    """Test handling of missing values in matrix interface"""
+    caplog.set_level('DEBUG')
+    
+    # Test single feature with missing values
+    results = mmf.fit_feature_model_matrix(
+        missing_data['X_features'][:, 0],
+        missing_data['X_model_with_intercept'],
+        missing_data['feature_names'][0],
+        missing_data['term_names_with_intercept']
+    )
+    
+    assert isinstance(results, pd.DataFrame)
+    assert len(results) > 0
+    assert "Filtering 5 missing values" in caplog.text
+    
+    # Test parallel fitting with different missing value patterns
+    results_all = mmf.fit_parallel_models_matrix(
+        missing_data['X_features'],
+        missing_data['X_model_with_intercept'],
+        missing_data['feature_names'],
+        missing_data['term_names_with_intercept']
+    )
+    
+    assert isinstance(results_all, pd.DataFrame)
+    assert len(results_all) > 0
+    # Should have results for features with sufficient data
+    assert len(set(results_all['feature'].unique()) & set(['missing_start', 'missing_end'])) == 2
+    # Feature with too many missing values should be skipped
+    assert 'missing_middle' not in results_all['feature'].unique()
+
+def test_insufficient_samples():
+    """Test handling of features with insufficient non-missing samples"""
+    # Create data with only 1 valid sample
+    X_features = np.array([[1.0], [np.nan], [np.nan]])
+    X_model = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+    data = pd.DataFrame(X_model, columns=['x1', 'x2'])
+    
+    # Test formula interface
+    results_formula = mmf.fit_feature_model_formula(
+        X_features[:, 0],
+        data,
+        'insufficient_samples',
+        formula='y ~ x1 + x2',
+        model_class='ols'
+    )
+    assert len(results_formula) == 0
+    
+    # Test matrix interface
+    results_matrix = mmf.fit_feature_model_matrix(
+        X_features[:, 0],
+        X_model,
+        'insufficient_samples',
+        ['x1', 'x2']
+    )
+    assert len(results_matrix) == 0
+
 def test_input_validation():
     """Test input validation"""
     X_features = np.random.randn(10, 2)
     X_model = np.random.randn(5, 2)  # Mismatched samples
+    data = pd.DataFrame(X_model, columns=['x1', 'x2'])
     feature_names = ['f1', 'f2']
     term_names = ['x1', 'x2']
     
@@ -185,17 +313,21 @@ def test_input_validation():
     
     # Formula interface
     with pytest.raises(ValueError, match="must have same number of samples"):
-        mmf.fit_parallel_models_formula(
-            X_features, X_model, feature_names,
-            formula='y ~ x1 + x2', term_names=term_names
-        )
+        mmf.fit_parallel_models_formula(X_features, data, feature_names, formula='y ~ x1 + x2')
     
-    # Test invalid model class
+    # Test mismatched feature names
+    X_features_small = np.random.randn(5, 1)
+    with pytest.raises(ValueError, match="Length of feature_names .* must match number of features"):
+        mmf.fit_parallel_models_formula(X_features_small, data, feature_names, formula='y ~ x1 + x2')
+    
+    # Test unsupported model class
     with pytest.raises(ValueError, match="Unsupported model class"):
         mmf.fit_feature_model_formula(
-            X_features[:, 0], X_model, 'f1',
-            formula='y ~ x1 + x2', term_names=term_names,
-            model_class='invalid'
+            X_features_small[:, 0],
+            data,
+            'feature',
+            formula='y ~ x1 + x2',
+            model_class='unsupported'
         )
 
 def test_progress_bar(test_data, caplog):

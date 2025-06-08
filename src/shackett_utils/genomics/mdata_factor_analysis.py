@@ -19,6 +19,7 @@ import pandas as pd
 import seaborn as sns
 import statsmodels.formula.api as smf
 from statsmodels.stats.multitest import multipletests
+from ..statistics.constants import STATISTICS_DEFS, FDR_METHODS_DEFS
 
 FACTOR_REGRESSION_STR = "mofa_regression_{}"
 
@@ -1101,32 +1102,27 @@ def regress_factors_with_formula(
     modality: str = "transcriptomics"  # Default modality
 ) -> pd.DataFrame:
     """
-    Apply formula-based regression to MOFA factors.
+    Regress factors against variables using a formula interface.
     
     Parameters
     ----------
     mdata : MuData
-        MuData object with MOFA results in obsm['X_mofa']
+        Multi-modal data object containing factor analysis results.
     formula : str
-        Formula for regression in patsy format (e.g., '~ case + gender').
-        Do not include the dependent variable as it will be each factor.
-    factors : int or list of ints, optional
-        Factors to analyze. If None, all factors are used.
-    modality : str, default="transcriptomics"
-        Modality to use for observation variables.
+        Formula for regression (e.g. "~ condition + batch").
+    factors : Optional[Union[int, List[int]]], optional
+        Specific factors to analyze. If None, analyze all factors.
+    modality : str, optional
+        Modality to analyze. Default is "transcriptomics".
         
     Returns
     -------
     pd.DataFrame
-        DataFrame with regression statistics for each factor.
+        DataFrame with regression results.
     """
-    # Check if MOFA results exist
-    if 'X_mofa' not in mdata.obsm:
-        raise ValueError("MOFA results not found in mdata.obsm['X_mofa']")
-    
-    # Check if modality exists
+    # Get factor data
     if modality not in mdata.mod:
-        raise ValueError(f"Modality '{modality}' not found in MuData object. Available modalities: {list(mdata.mod.keys())}")
+        raise ValueError(f"Modality {modality} not found in MuData object")
     
     # Extract MOFA factors
     X_mofa = mdata.obsm["X_mofa"]

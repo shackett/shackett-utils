@@ -4,8 +4,9 @@ import statsmodels.api as sm
 import statsmodels.formula.api as smf
 from pygam import LinearGAM, s
 from abc import ABC, abstractmethod
-from typing import Union, Optional, Dict, Any
+from typing import Union, Optional, Dict, Any, List
 import warnings
+from .constants import REQUIRED_TIDY_VARS, TIDY_DEFS
 
 def _validate_xy_inputs(X: np.ndarray, y: np.ndarray) -> None:
     """Validate model matrix and response vector inputs"""
@@ -90,7 +91,7 @@ class StatisticalModel(ABC):
             # Matrix-based fitting
             result = pd.DataFrame(
                 self._X, 
-                columns=self.term_names[1:] if self.term_names[0] == 'const' else self.term_names
+                columns=self.term_names
             )
             result['y'] = self._y
             result['.fitted'] = self.fitted_model.fittedvalues
@@ -146,7 +147,7 @@ class OLSModel(StatisticalModel):
             'term': terms,
             'estimate': params,
             'std_error': self.fitted_model.bse,
-            't_statistic': self.fitted_model.tvalues,
+            'statistic': self.fitted_model.tvalues,
             'p_value': self.fitted_model.pvalues,
             'conf_low': conf_int[:, 0] if isinstance(conf_int, np.ndarray) else conf_int.iloc[:, 0],
             'conf_high': conf_int[:, 1] if isinstance(conf_int, np.ndarray) else conf_int.iloc[:, 1]
@@ -498,3 +499,24 @@ def fit_model_xy(X: np.ndarray, y: np.ndarray, method: str = 'ols',
     
     model = MODEL_REGISTRY[method]()
     return model.fit_xy(X, y, term_names=term_names, **kwargs)
+
+def _validate_tidy_df(df: pd.DataFrame) -> None:
+    """
+    Validate that a DataFrame meets the requirements for a tidy results table.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame to validate
+        
+    Raises
+    ------
+    ValueError
+        If DataFrame is empty or missing required columns
+    """
+    if df.empty:
+        raise ValueError("Tidy DataFrame must contain at least one row")
+    
+    missing_cols = [col for col in REQUIRED_TIDY_VARS if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Tidy DataFrame missing required columns: {missing_cols}")

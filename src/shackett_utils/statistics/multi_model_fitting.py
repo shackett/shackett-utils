@@ -4,9 +4,35 @@ import pandas as pd
 from joblib import Parallel, delayed
 import statsmodels.stats.multitest as multitest
 import logging
-from .model_fitting import StatisticalModel, OLSModel, GAMModel
+from .model_fitting import StatisticalModel, OLSModel, GAMModel, _validate_tidy_df
+from .constants import REQUIRED_TIDY_VARS, STATISTICS_DEFS, MULTITEST_GROUPING_VARS, FDR_METHODS_DEFS, FDR_METHODS
 
 logger = logging.getLogger(__name__)
+
+def _handle_model_error(e: Exception, feature_name: str) -> pd.DataFrame:
+    """
+    Handle model fitting errors consistently.
+    
+    Parameters
+    ----------
+    e : Exception
+        The caught exception
+    feature_name : str
+        Name of the feature being modeled
+        
+    Returns
+    -------
+    pd.DataFrame
+        Empty DataFrame for failed model fits
+    """
+    if isinstance(e, ValueError) and "Unsupported model class" in str(e):
+        raise e
+    # Handle perfect collinearity and other numerical errors
+    if any(msg in str(e).lower() for msg in ['singular', 'collinear', 'invertible']):
+        logger.warning(f"Skipping feature {feature_name} due to perfect collinearity or numerical issues")
+    else:
+        logger.warning(f"Error in feature {feature_name}: {str(e)}")
+    return pd.DataFrame()
 
 def fit_feature_model_formula(
     y: np.ndarray,
@@ -41,11 +67,9 @@ def fit_feature_model_formula(
     """
     # Filter out missing values
     valid_mask = ~np.isnan(y)
-    if np.sum(valid_mask) < len(y):
-        logger.debug(f"Filtering {len(y) - np.sum(valid_mask)} missing values for feature {feature_name}")
-        if np.sum(valid_mask) < 2:  # Need at least 2 samples for modeling
-            logger.warning(f"Skipping feature {feature_name} due to insufficient non-missing values")
-            return pd.DataFrame()
+    n_valid = np.sum(valid_mask)
+    if n_valid < len(y):
+        logger.debug(f"Filtering {len(y) - n_valid} missing values for feature {feature_name}")
         y = y[valid_mask]
         data = data.iloc[valid_mask]
     
@@ -72,14 +96,8 @@ def fit_feature_model_formula(
         
         return model.tidy()
             
-    except ValueError as e:
-        if "Unsupported model class" in str(e):
-            raise
-        logger.warning(f"Error in feature {feature_name}: {str(e)}")
-        return pd.DataFrame()
     except Exception as e:
-        logger.warning(f"Error in feature {feature_name}: {str(e)}")
-        return pd.DataFrame()
+        return _handle_model_error(e, feature_name)
 
 def fit_feature_model_matrix(
     y: np.ndarray,
@@ -111,11 +129,9 @@ def fit_feature_model_matrix(
     """
     # Filter out missing values
     valid_mask = ~np.isnan(y)
-    if np.sum(valid_mask) < len(y):
-        logger.debug(f"Filtering {len(y) - np.sum(valid_mask)} missing values for feature {feature_name}")
-        if np.sum(valid_mask) < 2:  # Need at least 2 samples for modeling
-            logger.warning(f"Skipping feature {feature_name} due to insufficient non-missing values")
-            return pd.DataFrame()
+    n_valid = np.sum(valid_mask)
+    if n_valid < len(y):
+        logger.debug(f"Filtering {len(y) - n_valid} missing values for feature {feature_name}")
         y = y[valid_mask]
         X = X[valid_mask]
     
@@ -136,8 +152,76 @@ def fit_feature_model_matrix(
         return model.tidy()
             
     except Exception as e:
-        logger.warning(f"Error in feature {feature_name}: {str(e)}")
-        return pd.DataFrame()
+        return _handle_model_error(e, feature_name)
+
+def _validate_tidy_df(df: pd.DataFrame) -> None:
+    """
+    Validate that a DataFrame meets the requirements for a tidy results table.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame to validate
+        
+    Raises
+    ------
+    ValueError
+        If DataFrame is empty or missing required columns
+    """
+    if df.empty:
+        raise ValueError("Tidy DataFrame must contain at least one row")
+    
+    missing_cols = [col for col in REQUIRED_TIDY_VARS if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Tidy DataFrame missing required columns: {missing_cols}")
+
+def control_fdr(results_df: pd.DataFrame, fdr_method: str = FDR_METHODS_DEFS.FDR_BH) -> pd.DataFrame:
+    """
+    Apply FDR control to p-values, grouping by term and model_name (if present).
+    
+    Parameters
+    ----------
+    results_df : pd.DataFrame
+        DataFrame with model results. Must be a valid tidy DataFrame with required columns.
+    fdr_method : str
+        FDR method to use. Must be one of the methods in FDR_METHODS.
+        
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with FDR-corrected p-values
+        
+    Raises
+    ------
+    ValueError
+        If results_df is empty or missing required columns
+    """
+    # Validate input DataFrame
+    _validate_tidy_df(results_df)
+    
+    if fdr_method not in FDR_METHODS:
+        raise ValueError(f"Invalid FDR method: {fdr_method}. Must be one of: {FDR_METHODS}")
+    
+    # Determine grouping columns based on available columns
+    group_cols = [col for col in MULTITEST_GROUPING_VARS if col in results_df.columns]
+    if len(group_cols) > 1:
+        logger.info(f"Applying FDR control within groups: {', '.join(group_cols)}")
+    else:
+        logger.info(f"Applying FDR control within {group_cols[0]} groups")
+    
+    # Group by specified columns and calculate FDR-corrected p-values
+    for _, group in results_df.groupby(group_cols):
+        mask = results_df.index.isin(group.index)
+        p_values = group[STATISTICS_DEFS.P_VALUE].values
+        if len(p_values) > 0:  # Only perform correction if we have p-values
+            results_df.loc[mask, STATISTICS_DEFS.Q_VALUE] = multitest.multipletests(
+                p_values, 
+                method=fdr_method
+            )[1]
+        else:
+            results_df.loc[mask, STATISTICS_DEFS.Q_VALUE] = np.nan
+    
+    return results_df
 
 def fit_parallel_models_formula(
     X_features: np.ndarray,
@@ -201,7 +285,16 @@ def fit_parallel_models_formula(
         ) for i in range(X_features.shape[1])
     )
     
-    results = _process_parallel_results(results_nested)
+    # Filter out empty DataFrames and combine results
+    results_nested = [df for df in results_nested if not df.empty]
+    if not results_nested:
+        logger.warning("No valid model results were generated. Check your data and parameters.")
+        return pd.DataFrame(columns=['feature', 'term', 'estimate', 'std_error', 'p_value'])
+    
+    # Combine results and apply FDR control
+    results_df = pd.concat(results_nested, ignore_index=True)
+    results = control_fdr(results_df)
+    
     logger.info(f"Completed model fitting for {len(results)} feature-term pairs.")
     return results
 
@@ -265,32 +358,15 @@ def fit_parallel_models_matrix(
         ) for i in range(X_features.shape[1])
     )
     
-    results = _process_parallel_results(results_nested)
-    logger.info(f"Completed model fitting for {len(results)} feature-term pairs.")
-    return results
-
-def _process_parallel_results(results_nested: List[pd.DataFrame]) -> pd.DataFrame:
-    """Process results from parallel model fitting."""
-    # Handle empty results
+    # Filter out empty DataFrames and combine results
+    results_nested = [df for df in results_nested if not df.empty]
     if not results_nested:
-        logger.warning("No model results were generated. Check your data and parameters.")
-        return pd.DataFrame()
+        logger.warning("No valid model results were generated. Check your data and parameters.")
+        return pd.DataFrame(columns=['feature', 'term', 'estimate', 'std_error', 'p_value'])
     
-    # Combine results
+    # Combine results and apply FDR control
     results_df = pd.concat(results_nested, ignore_index=True)
+    results = control_fdr(results_df)
     
-    # Add FDR correction if p-values present
-    if not results_df.empty and "p_value" in results_df.columns:
-        # Group by term and calculate FDR-corrected p-values
-        for term in results_df["term"].unique():
-            mask = results_df["term"] == term
-            p_values = results_df.loc[mask, "p_value"].values
-            if len(p_values) > 0:  # Only perform correction if we have p-values
-                results_df.loc[mask, "fdr_bh"] = multitest.multipletests(
-                    p_values, 
-                    method="fdr_bh"
-                )[1]
-            else:
-                results_df.loc[mask, "fdr_bh"] = np.nan
-    
-    return results_df 
+    logger.info(f"Completed model fitting for {len(results)} feature-term pairs.")
+    return results 

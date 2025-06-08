@@ -20,6 +20,7 @@ import statsmodels.formula.api as smf
 
 from shackett_utils.genomics.adata import get_adata_features_and_data
 from ..statistics.multi_model_fitting import fit_parallel_models
+from ..statistics.constants import STATISTICS_DEFS
 
 def _prepare_model_matrix(
     adata: AnnData,
@@ -191,7 +192,7 @@ def add_regression_results_to_anndata(
         coef_safe = coef.replace(" ", "_").replace("-", "_")
         
         # Determine the p-value column to use (FDR-corrected if available)
-        p_col = "fdr_bh" if "fdr_bh" in results.columns else "p_value"
+        p_col = STATISTICS_DEFS.Q_VALUE if STATISTICS_DEFS.Q_VALUE in results.columns else STATISTICS_DEFS.P_VALUE
         
         # Get significant features for this coefficient
         sig_mask = (results["coefficient"] == coef) & (results[p_col] < fdr_cutoff)
@@ -230,7 +231,7 @@ def add_regression_results_to_anndata(
             # Raw p-values
             pval_dict: Dict[str, float] = {}
             for _, row in coef_results.iterrows():
-                pval_dict[row["feature"]] = row["p_value"]
+                pval_dict[row[STATISTICS_DEFS.FEATURE_NAME]] = row[STATISTICS_DEFS.P_VALUE]
                 
             adata.var[f"pval_{coef_safe}"] = pd.Series(
                 [pval_dict.get(f, np.nan) for f in adata.var_names], 
@@ -238,10 +239,10 @@ def add_regression_results_to_anndata(
             )
             
             # FDR-corrected p-values (q-values)
-            if "fdr_bh" in coef_results.columns:
+            if STATISTICS_DEFS.Q_VALUE in coef_results.columns:
                 qval_dict: Dict[str, float] = {}
                 for _, row in coef_results.iterrows():
-                    qval_dict[row["feature"]] = row["fdr_bh"]
+                    qval_dict[row[STATISTICS_DEFS.FEATURE_NAME]] = row[STATISTICS_DEFS.Q_VALUE]
                     
                 adata.var[f"qval_{coef_safe}"] = pd.Series(
                     [qval_dict.get(f, np.nan) for f in adata.var_names], 
@@ -251,7 +252,7 @@ def add_regression_results_to_anndata(
             # T-statistics
             tstat_dict: Dict[str, float] = {}
             for _, row in coef_results.iterrows():
-                tstat_dict[row["feature"]] = row["statistic"]
+                tstat_dict[row[STATISTICS_DEFS.FEATURE_NAME]] = row["statistic"]
                 
             adata.var[f"tstat_{coef_safe}"] = pd.Series(
                 [tstat_dict.get(f, np.nan) for f in adata.var_names], 
@@ -424,14 +425,14 @@ def _plot_single_term_pvalue_histograms(
     Utility to plot p-value histograms and QQ plots for a single coefficient/term.
     Returns the matplotlib Figure.
     """
-    n_panels = 3 if "fdr_bh" in coef_results.columns else 2
+    n_panels = 3 if STATISTICS_DEFS.Q_VALUE in coef_results.columns else 2
     fig, axes = plt.subplots(1, n_panels, figsize=(figsize[0]*n_panels/2, figsize[1]))
     fig.suptitle(f"P-value Distribution for Coefficient: {coef}" +
                  (f" in {modality_name}" if modality_name else ""),
                  fontsize=16)
 
     # Raw p-values
-    sns.histplot(coef_results["p_value"], bins=20, kde=True, ax=axes[0])
+    sns.histplot(coef_results[STATISTICS_DEFS.P_VALUE], bins=20, kde=True, ax=axes[0])
     axes[0].set_title("Raw P-values")
     axes[0].set_xlabel("P-value")
     axes[0].set_ylabel("Count")
@@ -444,9 +445,9 @@ def _plot_single_term_pvalue_histograms(
 
     # Add summary statistics
     if include_stats:
-        avg_p = coef_results["p_value"].mean()
-        median_p = coef_results["p_value"].median()
-        sig_count = sum(coef_results["p_value"] < 0.05)
+        avg_p = coef_results[STATISTICS_DEFS.P_VALUE].mean()
+        median_p = coef_results[STATISTICS_DEFS.P_VALUE].median()
+        sig_count = sum(coef_results[STATISTICS_DEFS.P_VALUE] < 0.05)
         sig_pct = 100 * sig_count / len(coef_results)
         stats_text = f"Mean: {avg_p:.4f}\nMedian: {median_p:.4f}\n"
         stats_text += f"Significant: {sig_count}/{len(coef_results)} ({sig_pct:.1f}%)"
@@ -456,7 +457,7 @@ def _plot_single_term_pvalue_histograms(
                      bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
     # QQ plot of p-values
-    pvals = np.sort(coef_results["p_value"])
+    pvals = np.sort(coef_results[STATISTICS_DEFS.P_VALUE])
     expected = np.linspace(0, 1, len(pvals) + 1)[1:]
     axes[1].scatter(expected, pvals, alpha=0.5)
     axes[1].plot([0, 1], [0, 1], 'r--')
@@ -466,16 +467,16 @@ def _plot_single_term_pvalue_histograms(
 
     # FDR-corrected p-values (if available)
     if n_panels == 3:
-        sns.histplot(coef_results["fdr_bh"], bins=20, kde=True, ax=axes[2])
+        sns.histplot(coef_results[STATISTICS_DEFS.Q_VALUE], bins=20, kde=True, ax=axes[2])
         axes[2].set_title("FDR-corrected P-values (Benjamini-Hochberg)")
         axes[2].set_xlabel("Adjusted P-value")
         axes[2].set_ylabel("Count")
         axes[2].plot(x, [y] * 100, 'r--', label='Uniform Distribution')
         axes[2].legend()
         if include_stats:
-            avg_fdr = coef_results["fdr_bh"].mean()
-            median_fdr = coef_results["fdr_bh"].median()
-            sig_count_fdr = sum(coef_results["fdr_bh"] < fdr_cutoff)
+            avg_fdr = coef_results[STATISTICS_DEFS.Q_VALUE].mean()
+            median_fdr = coef_results[STATISTICS_DEFS.Q_VALUE].median()
+            sig_count_fdr = sum(coef_results[STATISTICS_DEFS.Q_VALUE] < fdr_cutoff)
             sig_pct_fdr = 100 * sig_count_fdr / len(coef_results)
             stats_text = f"Mean: {avg_fdr:.4f}\nMedian: {median_fdr:.4f}\n"
             stats_text += f"Significant: {sig_count_fdr}/{len(coef_results)} ({sig_pct_fdr:.1f}%)"
@@ -486,7 +487,7 @@ def _plot_single_term_pvalue_histograms(
 
     # KS test
     if show_ks_test:
-        ks_stat, ks_pval = kstest(coef_results["p_value"], 'uniform')
+        ks_stat, ks_pval = kstest(coef_results[STATISTICS_DEFS.P_VALUE], 'uniform')
         fig.text(0.5, 0.01,
                  f"Kolmogorov-Smirnov test against uniform distribution: "
                  f"statistic={ks_stat:.4f}, p-value={ks_pval:.4f}",

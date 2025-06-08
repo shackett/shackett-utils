@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 
 from shackett_utils.statistics import model_fitting
+from shackett_utils.statistics.model_fitting import _validate_tidy_df
 
 @pytest.fixture
 def test_data():
@@ -67,10 +68,10 @@ def test_ols_tidy(test_data):
     """Test OLS tidy output format"""
     model = model_fitting.fit_model('y ~ x1 + x2', data=test_data, method='ols')
     tidy_df = model.tidy()
-    assert isinstance(tidy_df, pd.DataFrame)
+    
+    # Validate tidy DataFrame format
+    _validate_tidy_df(tidy_df)
     assert len(tidy_df) == 3  # Intercept + 2 predictors
-    required_cols = ['term', 'estimate', 'std_error', 't_statistic', 'p_value']
-    assert all(col in tidy_df.columns for col in required_cols)
 
 def test_ols_glance(test_data):
     """Test OLS glance output format"""
@@ -295,3 +296,29 @@ def test_invalid_family():
     with pytest.raises(ValueError, match="Unsupported family"):
         model_fitting.fit_model('y ~ x1', data=pd.DataFrame({'y': [1], 'x1': [1]}),
                               method='gam', family='invalid')
+
+def test_validate_tidy_df():
+    """Test tidy DataFrame validation"""
+    # Test empty DataFrame
+    with pytest.raises(ValueError, match="must contain at least one row"):
+        _validate_tidy_df(pd.DataFrame())
+    
+    # Test missing columns
+    incomplete_df = pd.DataFrame({
+        'term': ['x1'],
+        'estimate': [1.0],
+    })
+    with pytest.raises(ValueError, match="missing required columns"):
+        _validate_tidy_df(incomplete_df)
+    
+    # Test valid DataFrame
+    valid_df = pd.DataFrame({
+        'term': ['x1'],
+        'estimate': [1.0],
+        'std_error': [0.1],
+        't_statistic': [10.0],
+        'p_value': [0.05],
+        'conf_low': [0.8],
+        'conf_high': [1.2]
+    })
+    _validate_tidy_df(valid_df)  # Should not raise
