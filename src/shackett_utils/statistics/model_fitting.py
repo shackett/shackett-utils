@@ -6,7 +6,7 @@ from pygam import LinearGAM, s
 from abc import ABC, abstractmethod
 from typing import Union, Optional, Dict, Any, List
 import warnings
-from .constants import REQUIRED_TIDY_VARS, TIDY_DEFS
+from .constants import REQUIRED_TIDY_VARS, TIDY_DEFS, STATISTICS_DEFS
 
 def _validate_xy_inputs(X: np.ndarray, y: np.ndarray) -> None:
     """Validate model matrix and response vector inputs"""
@@ -37,9 +37,21 @@ def _calculate_residual_stats(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[st
     }
 
 class StatisticalModel(ABC):
-    """Abstract base class for statistical models with broom-like interface"""
+    """Abstract base class for statistical models."""
     
     def __init__(self, feature_name: Optional[str] = None, model_name: Optional[str] = None):
+        """
+        Initialize model.
+        
+        Parameters
+        ----------
+        feature_name : str, optional
+            Name of the feature being modeled. Default is None.
+        model_name : str, optional
+            Name of the model for identification. Default is None.
+        """
+        self.feature_name = feature_name
+        self.model_name = model_name
         self.fitted_model = None
         self.formula = None
         self.data = None
@@ -52,9 +64,9 @@ class StatisticalModel(ABC):
     def _add_identifiers(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add feature and model identifiers to output dataframes if present"""
         if self.feature_name is not None:
-            df = df.assign(feature=self.feature_name)
+            df[STATISTICS_DEFS.FEATURE_NAME] = self.feature_name
         if self.model_name is not None:
-            df = df.assign(model=self.model_name)
+            df[TIDY_DEFS.MODEL_NAME] = self.model_name
         return df
         
     @abstractmethod

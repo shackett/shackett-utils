@@ -18,9 +18,9 @@ from scipy.stats import kstest
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
 
-from shackett_utils.genomics.adata import get_adata_features_and_data
-from ..statistics.multi_model_fitting import fit_parallel_models
-from ..statistics.constants import STATISTICS_DEFS
+from shackett_utils.genomics.adata_utils import get_adata_features_and_data
+from ..statistics.multi_model_fitting import fit_parallel_models_formula
+from ..statistics.constants import STATISTICS_DEFS, TIDY_DEFS
 
 def _prepare_model_matrix(
     adata: AnnData,
@@ -207,23 +207,20 @@ def add_regression_results_to_anndata(
         # Create effect size dictionary for all features
         effect_dict: Dict[str, float] = {}
         for _, row in coef_results.iterrows():
-            effect_dict[row["feature"]] = row["estimate"]
+            effect_dict[row[STATISTICS_DEFS.FEATURE_NAME]] = row[TIDY_DEFS.ESTIMATE]
         
         # Create effect size column for all features or only significant ones
         if effect_only_for_significant:
             # Original behavior: add effect sizes only for significant features
             adata.var[f"effect_{coef_safe}"] = pd.Series(
-                [
-                    effect_dict.get(f, np.nan) if f in sig_features else np.nan
-                    for f in adata.var_names
-                ],
-                index=adata.var_names,
+                [effect_dict.get(f, np.nan) if f in sig_features else np.nan for f in adata.var_names], 
+                index=adata.var_names
             )
         else:
             # New behavior: add effect sizes for all features
             adata.var[f"effect_{coef_safe}"] = pd.Series(
-                [effect_dict.get(f, np.nan) for f in adata.var_names],
-                index=adata.var_names,
+                [effect_dict.get(f, np.nan) for f in adata.var_names], 
+                index=adata.var_names
             )
         
         # Add all statistics as separate columns for all features
@@ -262,7 +259,7 @@ def add_regression_results_to_anndata(
             # Standard errors
             stderr_dict: Dict[str, float] = {}
             for _, row in coef_results.iterrows():
-                stderr_dict[row["feature"]] = row["std_err"]
+                stderr_dict[row[STATISTICS_DEFS.FEATURE_NAME]] = row[TIDY_DEFS.STD_ERROR]
                 
             adata.var[f"stderr_{coef_safe}"] = pd.Series(
                 [stderr_dict.get(f, np.nan) for f in adata.var_names], 

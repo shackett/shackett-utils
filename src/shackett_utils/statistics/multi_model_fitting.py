@@ -5,7 +5,7 @@ from joblib import Parallel, delayed
 import statsmodels.stats.multitest as multitest
 import logging
 from .model_fitting import StatisticalModel, OLSModel, GAMModel, _validate_tidy_df
-from .constants import REQUIRED_TIDY_VARS, STATISTICS_DEFS, MULTITEST_GROUPING_VARS, FDR_METHODS_DEFS, FDR_METHODS
+from .constants import REQUIRED_TIDY_VARS, STATISTICS_DEFS, MULTITEST_GROUPING_VARS, FDR_METHODS_DEFS, FDR_METHODS, TIDY_DEFS
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,8 @@ def fit_feature_model_formula(
     data: pd.DataFrame,
     feature_name: str,
     formula: str,
-    model_class: str = 'gam',
+    model_class: str = 'ols',
+    model_name: Optional[str] = None,
     **model_kwargs
 ) -> pd.DataFrame:
     """
@@ -57,7 +58,9 @@ def fit_feature_model_formula(
         Model formula (e.g. 'y ~ x1 + s(x2)')
     model_class : str
         Type of model to fit ('ols', 'gam', etc.)
-    **model_kwargs : 
+    model_name : str, optional
+        Name of the model for identification. Default is None.
+    **model_kwargs
         Additional arguments passed to model fitting
         
     Returns
@@ -81,9 +84,9 @@ def fit_feature_model_formula(
     try:
         # Create model instance
         if model_class.lower() == 'ols':
-            model = OLSModel(feature_name=feature_name)
+            model = OLSModel(feature_name=feature_name, model_name=model_name)
         elif model_class.lower() == 'gam':
-            model = GAMModel(feature_name=feature_name)
+            model = GAMModel(feature_name=feature_name, model_name=model_name)
         else:
             raise ValueError(f"Unsupported model class: {model_class}")
         
@@ -104,6 +107,7 @@ def fit_feature_model_matrix(
     X: np.ndarray,
     feature_name: str,
     term_names: List[str],
+    model_name: Optional[str] = None,
     **model_kwargs
 ) -> pd.DataFrame:
     """
@@ -119,7 +123,9 @@ def fit_feature_model_matrix(
         Name of the feature being modeled
     term_names : List[str]
         Names for the coefficients/predictors
-    **model_kwargs : 
+    model_name : str, optional
+        Name of the model for identification. Default is None.
+    **model_kwargs
         Additional arguments passed to model fitting
         
     Returns
@@ -135,6 +141,7 @@ def fit_feature_model_matrix(
         y = y[valid_mask]
         X = X[valid_mask]
     
+    # Check for zero variance
     if np.var(y) == 0:
         logger.warning(f"Skipping feature {feature_name} due to zero variance")
         return pd.DataFrame()
@@ -146,7 +153,7 @@ def fit_feature_model_matrix(
         if len(term_names) != X.shape[1]:
             raise ValueError("Number of coefficient names must match number of model matrix columns")
         
-        model = OLSModel(feature_name=feature_name)
+        model = OLSModel(feature_name=feature_name, model_name=model_name)
         model.fit_xy(X, y, term_names=term_names, **model_kwargs)
         
         return model.tidy()
@@ -229,39 +236,42 @@ def fit_parallel_models_formula(
     feature_names: List[str],
     formula: str,
     model_class: str = 'gam',
-    n_jobs: int = -1,
+    n_jobs: int = 1,
     batch_size: int = 100,
+    model_name: Optional[str] = None,
     progress_bar: bool = True,
     **model_kwargs
 ) -> pd.DataFrame:
     """
-    Fit models in parallel for multiple features using formula interface.
+    Fit multiple features in parallel using formula interface.
     
     Parameters
     ----------
     X_features : np.ndarray
         Feature matrix where each column is a feature to model (n_samples x n_features)
     data : pd.DataFrame
-        DataFrame containing predictor variables
+        DataFrame containing variables for formula
     feature_names : List[str]
-        Names of the features being modeled
+        Names of features
     formula : str
-        Model formula (e.g. 'y ~ x1 + s(x2)')
-    model_class : str
-        Type of model to fit ('ols', 'gam', etc.)
-    n_jobs : int
-        Number of parallel jobs. -1 means using all processors.
-    batch_size : int
-        Number of features to process in each batch.
-    progress_bar : bool
-        Whether to display a progress bar.
-    **model_kwargs : 
+        Model formula (e.g. 'y ~ x1 + x2')
+    model_class : str, optional
+        Type of model to fit ('ols' or 'gam'). Default is 'gam'.
+    n_jobs : int, optional
+        Number of parallel jobs. Default is 1.
+    batch_size : int, optional
+        Number of features to process in each batch. Default is 100.
+    model_name : str, optional
+        Name of the model for identification in output. Default is None.
+    progress_bar : bool, optional
+        Whether to show progress bar. Default is True.
+    **model_kwargs
         Additional arguments passed to model fitting
         
     Returns
     -------
     pd.DataFrame
-        DataFrame with model statistics for each feature-coefficient pair
+        Combined results from all models
     """
     # Input validation
     if len(feature_names) != X_features.shape[1]:
@@ -281,6 +291,7 @@ def fit_parallel_models_formula(
             feature_names[i],
             formula=formula,
             model_class=model_class,
+            model_name=model_name,
             **model_kwargs
         ) for i in range(X_features.shape[1])
     )
@@ -289,7 +300,7 @@ def fit_parallel_models_formula(
     results_nested = [df for df in results_nested if not df.empty]
     if not results_nested:
         logger.warning("No valid model results were generated. Check your data and parameters.")
-        return pd.DataFrame(columns=['feature', 'term', 'estimate', 'std_error', 'p_value'])
+        return pd.DataFrame(columns=[STATISTICS_DEFS.FEATURE_NAME, TIDY_DEFS.TERM, TIDY_DEFS.ESTIMATE, TIDY_DEFS.STD_ERROR, TIDY_DEFS.P_VALUE])
     
     # Combine results and apply FDR control
     results_df = pd.concat(results_nested, ignore_index=True)
@@ -303,28 +314,31 @@ def fit_parallel_models_matrix(
     X_model: np.ndarray,
     feature_names: List[str],
     term_names: List[str],
-    n_jobs: int = -1,
+    n_jobs: int = 1,
     batch_size: int = 100,
+    model_name: Optional[str] = None,
     progress_bar: bool = True,
     **model_kwargs
 ) -> pd.DataFrame:
     """
-    Fit OLS models in parallel for multiple features using matrix interface.
+    Fit OLS models for multiple features in parallel using matrix interface.
     
     Parameters
     ----------
     X_features : np.ndarray
         Feature matrix where each column is a feature to model (n_samples x n_features)
     X_model : np.ndarray
-        Model matrix for predictors (n_samples x n_predictors), should include intercept
+        Design matrix (n_samples x n_terms)
     feature_names : List[str]
         Names of the features
     term_names : List[str]
         Names for the coefficients/predictors
     n_jobs : int
-        Number of parallel jobs. -1 means using all processors.
+        Number of parallel jobs. Default is 1.
     batch_size : int
         Number of features to process in each batch.
+    model_name : str, optional
+        Name of the model for identification in output. Default is None.
     progress_bar : bool
         Whether to display a progress bar.
     **model_kwargs : 
@@ -333,7 +347,7 @@ def fit_parallel_models_matrix(
     Returns
     -------
     pd.DataFrame
-        DataFrame with model statistics for each feature-coefficient pair
+        Combined results from all models
     """
     # Input validation
     if X_features.shape[0] != X_model.shape[0]:
@@ -354,6 +368,7 @@ def fit_parallel_models_matrix(
             X_model,
             feature_names[i],
             term_names,
+            model_name=model_name,
             **model_kwargs
         ) for i in range(X_features.shape[1])
     )
@@ -362,7 +377,7 @@ def fit_parallel_models_matrix(
     results_nested = [df for df in results_nested if not df.empty]
     if not results_nested:
         logger.warning("No valid model results were generated. Check your data and parameters.")
-        return pd.DataFrame(columns=['feature', 'term', 'estimate', 'std_error', 'p_value'])
+        return pd.DataFrame(columns=[STATISTICS_DEFS.FEATURE_NAME, TIDY_DEFS.TERM, TIDY_DEFS.ESTIMATE, TIDY_DEFS.STD_ERROR, TIDY_DEFS.P_VALUE])
     
     # Combine results and apply FDR control
     results_df = pd.concat(results_nested, ignore_index=True)

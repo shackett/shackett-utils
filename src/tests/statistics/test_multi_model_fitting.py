@@ -2,7 +2,7 @@ import pytest
 import numpy as np
 import pandas as pd
 from shackett_utils.statistics import multi_model_fitting as mmf
-from shackett_utils.statistics.constants import STATISTICS_DEFS
+from shackett_utils.statistics.constants import STATISTICS_DEFS, TIDY_DEFS
 
 @pytest.fixture
 def test_data():
@@ -105,9 +105,9 @@ def test_fit_feature_model_matrix(test_data):
     
     assert isinstance(results, pd.DataFrame)
     assert len(results) == len(test_data['term_names_with_intercept'])
-    assert all(col in results.columns for col in ['feature', 'term', 'estimate', 'std_error', 'p_value'])
-    assert results.iloc[0]['feature'] == test_data['feature_names'][0]
-    assert results.iloc[0]['term'] == test_data['term_names_with_intercept'][0]
+    assert all(col in results.columns for col in [STATISTICS_DEFS.FEATURE_NAME, TIDY_DEFS.TERM, TIDY_DEFS.ESTIMATE, TIDY_DEFS.STD_ERROR, TIDY_DEFS.P_VALUE])
+    assert results.iloc[0][STATISTICS_DEFS.FEATURE_NAME] == test_data['feature_names'][0]
+    assert results.iloc[0][STATISTICS_DEFS.TERM] == test_data['term_names_with_intercept'][0]
 
 def test_fit_feature_model_formula(test_data):
     """Test formula-based fitting for a single feature"""
@@ -122,7 +122,7 @@ def test_fit_feature_model_formula(test_data):
     
     assert isinstance(results_ols, pd.DataFrame)
     assert len(results_ols) > 0
-    assert all(col in results_ols.columns for col in ['feature', 'term', 'estimate', 'std_error', 'p_value'])
+    assert all(col in results_ols.columns for col in [STATISTICS_DEFS.FEATURE_NAME, TIDY_DEFS.TERM, TIDY_DEFS.ESTIMATE, TIDY_DEFS.STD_ERROR, TIDY_DEFS.P_VALUE])
     
     # Test GAM
     results_gam = mmf.fit_feature_model_formula(
@@ -135,7 +135,7 @@ def test_fit_feature_model_formula(test_data):
     
     assert isinstance(results_gam, pd.DataFrame)
     assert len(results_gam) > 0
-    assert all(col in results_gam.columns for col in ['feature', 'term'])
+    assert all(col in results_gam.columns for col in [STATISTICS_DEFS.FEATURE_NAME, TIDY_DEFS.TERM])
 
 def test_fit_parallel_models_matrix(test_data):
     """Test parallel matrix-based OLS fitting"""
@@ -151,7 +151,7 @@ def test_fit_parallel_models_matrix(test_data):
     # Each feature should have results for each term
     expected_rows = len(test_data['feature_names']) * len(test_data['term_names_with_intercept'])
     assert len(results_df) == expected_rows
-    assert all(col in results_df.columns for col in ['feature', STATISTICS_DEFS.TERM, 'estimate', STATISTICS_DEFS.P_VALUE, STATISTICS_DEFS.Q_VALUE])
+    assert all(col in results_df.columns for col in [STATISTICS_DEFS.FEATURE_NAME, TIDY_DEFS.TERM, TIDY_DEFS.ESTIMATE, TIDY_DEFS.P_VALUE, STATISTICS_DEFS.Q_VALUE])
 
 def test_fit_parallel_models_formula(test_data):
     """Test parallel formula-based fitting"""
@@ -167,7 +167,7 @@ def test_fit_parallel_models_formula(test_data):
     
     assert isinstance(results_df_ols, pd.DataFrame)
     assert len(results_df_ols) > 0
-    assert all(col in results_df_ols.columns for col in ['feature', STATISTICS_DEFS.TERM, 'estimate', STATISTICS_DEFS.P_VALUE, STATISTICS_DEFS.Q_VALUE])
+    assert all(col in results_df_ols.columns for col in [STATISTICS_DEFS.FEATURE_NAME, TIDY_DEFS.TERM, TIDY_DEFS.ESTIMATE, TIDY_DEFS.P_VALUE, STATISTICS_DEFS.Q_VALUE])
     
     # Test GAM
     results_df_gam = mmf.fit_parallel_models_formula(
@@ -181,7 +181,7 @@ def test_fit_parallel_models_formula(test_data):
     
     assert isinstance(results_df_gam, pd.DataFrame)
     assert len(results_df_gam) > 0
-    assert all(col in results_df_gam.columns for col in ['feature', STATISTICS_DEFS.TERM])
+    assert all(col in results_df_gam.columns for col in [STATISTICS_DEFS.FEATURE_NAME, TIDY_DEFS.TERM])
 
 def test_zero_variance_features(zero_var_data):
     """Test handling of zero variance features"""
@@ -238,9 +238,9 @@ def test_missing_values_formula(missing_data, caplog):
     assert isinstance(results_all, pd.DataFrame)
     assert len(results_all) > 0
     # Should have results for features with sufficient data
-    assert len(set(results_all['feature'].unique()) & set(['missing_start', 'missing_end'])) == 2
+    assert len(set(results_all[STATISTICS_DEFS.FEATURE_NAME].unique()) & set(['missing_start', 'missing_end'])) == 2
     # Feature with too many missing values should be skipped
-    assert 'missing_middle' not in results_all['feature'].unique()
+    assert 'missing_middle' not in results_all[STATISTICS_DEFS.FEATURE_NAME].unique()
 
 def test_missing_values_matrix(missing_data, caplog):
     """Test handling of missing values in matrix interface"""
@@ -269,9 +269,9 @@ def test_missing_values_matrix(missing_data, caplog):
     assert isinstance(results_all, pd.DataFrame)
     assert len(results_all) > 0
     # Should have results for features with sufficient data
-    assert len(set(results_all['feature'].unique()) & set(['missing_start', 'missing_end'])) == 2
+    assert len(set(results_all[STATISTICS_DEFS.FEATURE_NAME].unique()) & set(['missing_start', 'missing_end'])) == 2
     # Feature with too many missing values should be skipped
-    assert 'missing_middle' not in results_all['feature'].unique()
+    assert 'missing_middle' not in results_all[STATISTICS_DEFS.FEATURE_NAME].unique()
 
 def test_insufficient_samples():
     """Test handling of features with insufficient non-missing samples"""

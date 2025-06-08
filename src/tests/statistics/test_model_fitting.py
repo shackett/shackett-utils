@@ -316,7 +316,7 @@ def test_validate_tidy_df():
         'term': ['x1'],
         'estimate': [1.0],
         'std_error': [0.1],
-        't_statistic': [10.0],
+        'statistic': [10.0],
         'p_value': [0.05],
         'conf_low': [0.8],
         'conf_high': [1.2]
