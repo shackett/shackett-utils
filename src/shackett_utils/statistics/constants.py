@@ -7,8 +7,9 @@ STATISTICS_DEFS = SimpleNamespace(
     MODEL_NAME = "model_name",
     TERM = "term",
     P_VALUE = "p_value",
-    Q_VALUE = "q_value",    
-)
+    Q_VALUE = "q_value",
+    SIGNIFICANCE = "significance",
+)    
 
 TIDY_DEFS = SimpleNamespace(
     TERM = STATISTICS_DEFS.TERM,
@@ -25,6 +26,16 @@ REQUIRED_TIDY_VARS = [
     TIDY_DEFS.ESTIMATE,
     TIDY_DEFS.P_VALUE
 ]
+
+# Map statistics to their column prefixes
+STATISTICS_ABBREVIATIONS = {
+    TIDY_DEFS.ESTIMATE: 'est',
+    TIDY_DEFS.STD_ERROR: 'stderr',
+    STATISTICS_DEFS.P_VALUE: 'p',
+    STATISTICS_DEFS.Q_VALUE: 'q',
+    TIDY_DEFS.STATISTIC: 'stat',
+    STATISTICS_DEFS.SIGNIFICANCE: 'sig'
+}
 
 GLANCE_DEFS = SimpleNamespace(
     R_SQUARED = "r_squared",

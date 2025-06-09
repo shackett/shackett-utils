@@ -6,7 +6,7 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 from scipy.stats import kstest
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, List, Union
 from .constants import STATISTICS_DEFS
 
 def plot_term_pvalue_histogram(
@@ -16,6 +16,7 @@ def plot_term_pvalue_histogram(
     include_stats: bool = True,
     show_ks_test: bool = True,
     fdr_cutoff: float = 0.05,
+    title_prefix: str = "",
 ) -> plt.Figure:
     """
     Plot p-value histograms and QQ plot for a single term.
@@ -36,6 +37,8 @@ def plot_term_pvalue_histogram(
         to the uniform distribution. Default is True.
     fdr_cutoff : float, optional
         Significance threshold for FDR-corrected p-values. Default is 0.05.
+    title_prefix : str, optional
+        Prefix to add to the plot title. Default is "".
 
     Returns
     -------
@@ -44,7 +47,7 @@ def plot_term_pvalue_histogram(
     """
     n_panels = 3 if STATISTICS_DEFS.Q_VALUE in data.columns else 2
     fig, axes = plt.subplots(1, n_panels, figsize=figsize)
-    fig.suptitle(f"P-value Distribution for Term: {term}", fontsize=16)
+    fig.suptitle(f"{title_prefix}P-value Distribution for Term: {term}", fontsize=16)
 
     # Raw p-values
     sns.histplot(data[STATISTICS_DEFS.P_VALUE], bins=20, kde=True, ax=axes[0])
@@ -114,15 +117,18 @@ def plot_term_pvalue_histogram(
 def plot_pvalue_histograms(
     data: pd.DataFrame,
     term_column: str = STATISTICS_DEFS.TERM,
+    partition_column: Optional[str] = None,
     figsize: Tuple[int, int] = (12, 8),
     include_stats: bool = True,
     show_ks_test: bool = True,
     fdr_cutoff: float = 0.05,
-    terms: Optional[list] = None
-) -> Dict[str, plt.Figure]:
+    terms: Optional[Union[str, List[str]]] = None,
+    partition_values: Optional[Union[str, List[str]]] = None,
+    n_cols: int = 3,
+) -> Dict[str, Union[plt.Figure, Dict[str, plt.Figure]]]:
     """
     Generate histograms of p-values and FDR-corrected p-values for all terms
-    in a tidy data table.
+    in a tidy data table, optionally stratified by a partition column.
 
     Parameters
     ----------
@@ -133,6 +139,9 @@ def plot_pvalue_histograms(
         - STATISTICS_DEFS.Q_VALUE (float, optional): FDR-corrected p-values
     term_column : str, optional
         Name of the column containing term names. Default is STATISTICS_DEFS.TERM.
+    partition_column : str, optional
+        Name of the column to partition by (e.g., 'data_modality'). If None,
+        plots are not stratified. Default is None.
     figsize : Tuple[int, int], optional
         Base figure size (width, height) in inches. Default is (12, 8).
     include_stats : bool, optional
@@ -141,39 +150,83 @@ def plot_pvalue_histograms(
         Whether to show Kolmogorov-Smirnov test results. Default is True.
     fdr_cutoff : float, optional
         Significance threshold for FDR-corrected p-values. Default is 0.05.
-    terms : list, optional
-        List of terms to plot. If None, plot all terms.
+    terms : str or list, optional
+        Term(s) to plot. If None, plot all terms.
+    partition_values : str or list, optional
+        Partition value(s) to include. If None, use all values.
+    n_cols : int, optional
+        Number of columns in the grid when plotting multiple terms/partitions.
+        Default is 3.
 
     Returns
     -------
-    Dict[str, plt.Figure]
-        Dictionary mapping term names to their corresponding figure objects.
+    Dict[str, Union[plt.Figure, Dict[str, plt.Figure]]]
+        If partition_column is None:
+            Dictionary mapping term names to their corresponding figure objects.
+        If partition_column is specified:
+            Dictionary mapping term names to dictionaries of partition values
+            and their corresponding figure objects.
     """
     # Set plot style
     sns.set_style("whitegrid")
     plt.rcParams.update({'font.size': 12})
 
-    # Get unique terms
-    unique_terms = data[term_column].unique()
+    # Handle terms input
+    if isinstance(terms, str):
+        terms = [terms]
+    unique_terms = data[term_column].unique() if terms is None else terms
     if terms is not None:
-        if isinstance(terms, str):
-            terms = [terms]
-        missing_terms = [t for t in terms if t not in unique_terms]
+        missing_terms = [t for t in terms if t not in data[term_column].unique()]
         if missing_terms:
             raise ValueError(f"Terms not found in data: {missing_terms}")
-        unique_terms = [t for t in terms if t in unique_terms]
+        unique_terms = [t for t in terms if t in data[term_column].unique()]
 
-    # Generate plots for each term
+    # If no partition column, use original behavior
+    if partition_column is None:
+        figures = {}
+        for term in unique_terms:
+            term_data = data[data[term_column] == term]
+            figures[term] = plot_term_pvalue_histogram(
+                term_data,
+                term,
+                figsize=figsize,
+                include_stats=include_stats,
+                show_ks_test=show_ks_test,
+                fdr_cutoff=fdr_cutoff
+            )
+        return figures
+
+    # Handle partition values input
+    if isinstance(partition_values, str):
+        partition_values = [partition_values]
+    unique_partitions = (data[partition_column].unique() if partition_values is None 
+                        else partition_values)
+    if partition_values is not None:
+        missing_partitions = [p for p in partition_values 
+                            if p not in data[partition_column].unique()]
+        if missing_partitions:
+            raise ValueError(f"Partition values not found in data: {missing_partitions}")
+        unique_partitions = [p for p in partition_values 
+                           if p in data[partition_column].unique()]
+
+    # Create figures for each term-partition combination
     figures = {}
     for term in unique_terms:
-        term_data = data[data[term_column] == term]
-        figures[term] = plot_term_pvalue_histogram(
-            term_data,
-            term,
-            figsize=figsize,
-            include_stats=include_stats,
-            show_ks_test=show_ks_test,
-            fdr_cutoff=fdr_cutoff
-        )
+        figures[term] = {}
+        for partition in unique_partitions:
+            # Filter data for this term-partition combination
+            mask = (data[term_column] == term) & (data[partition_column] == partition)
+            term_partition_data = data[mask]
+            
+            if len(term_partition_data) > 0:  # Only create plot if data exists
+                figures[term][partition] = plot_term_pvalue_histogram(
+                    term_partition_data,
+                    term,
+                    figsize=figsize,
+                    include_stats=include_stats,
+                    show_ks_test=show_ks_test,
+                    fdr_cutoff=fdr_cutoff,
+                    title_prefix=f"{partition} - "
+                )
 
     return figures 

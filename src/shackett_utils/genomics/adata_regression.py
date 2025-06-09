@@ -3,8 +3,9 @@ This module contains functions for regression and factor analysis.
 """
 
 import os
-from typing import List, Optional, Tuple, Dict, Union, Any
+from typing import List, Optional, Tuple, Dict, Union, Any, Set
 import logging
+import numpy as np
 
 import pandas as pd
 
@@ -13,12 +14,14 @@ from anndata import AnnData
 from shackett_utils.genomics import adata_utils
 from shackett_utils.statistics import multi_model_fitting
 from shackett_utils.statistics.constants import STATISTICS_DEFS, TIDY_DEFS
+from shackett_utils.genomics.constants import REGRESSION_DEFAULT_STATS
+from shackett_utils.statistics.constants import STATISTICS_ABBREVIATIONS
 
 def adata_model_fitting(
     adata: AnnData,
     formula: str,
     layer: Optional[str] = None,
-    model_class: str = 'ols',
+    model_class: Optional[str] = None,
     n_jobs: int = -1,
     batch_size: int = 100,
     model_name: Optional[str] = None,
@@ -40,8 +43,8 @@ def adata_model_fitting(
     layer : Optional[str]
         If provided, use this layer instead of X. The layer can be a string referring
         to a layer in adata.layers, or a key in adata.obsm for alternative feature matrices.
-    model_class : str
-        Type of model to fit ('ols', 'gam', etc.)
+    model_class : Optional[str]
+        Type of model to fit ('ols', 'gam', etc.). If None, will be auto-detected from formula.
     n_jobs : int
         Number of parallel jobs. -1 means using all processors.
     batch_size : int
@@ -86,141 +89,159 @@ def adata_model_fitting(
         **model_kwargs
     )
 
-
 def add_regression_results_to_anndata(
     adata: AnnData,
     results_df: pd.DataFrame,
+    stats_to_add: Optional[List[str]] = None,
     key_added: str = "regression_results",
-    fdr_cutoff: float = 0.05,
-    inplace: bool = True,
-    effect_only_for_significant: bool = False,  # New parameter
-    add_all_stats: bool = True  # Add all statistics columns
+    fdr_cutoff: Optional[float] = None,
+    inplace: bool = False
 ) -> Optional[AnnData]:
     """
-    Add regression results dataframe to an AnnData object in a structured way.
+    Add regression results to an AnnData object's .var dataframe.
     
     Parameters
     ----------
-    adata : anndata.AnnData
-        The annotated data matrix.
+    adata : AnnData
+        AnnData object to add results to
     results_df : pd.DataFrame
-        DataFrame with regression results as produced by apply_regression_per_feature().
+        DataFrame containing regression results
+    stats_to_add : Optional[List[str]]
+        List of statistics to add to the AnnData object.
+        If None, uses REGRESSION_DEFAULT_STATS
     key_added : str, optional
         Key under which to add the results in adata.uns.
-    fdr_cutoff : float, optional
-        Significance threshold for FDR-corrected p-values. Default is 0.05.
-    inplace : bool, optional
-        If True, modify adata inplace. Otherwise return a copy. Default is True.
-    effect_only_for_significant : bool, optional
-        If True, effect sizes are only stored for significant features.
-        If False, effect sizes are stored for all features. Default is False.
-    add_all_stats : bool, optional
-        If True, add all available statistics (p-values, q-values, t-statistics, std errors)
-        to the adata.var dataframe. Default is True.
+    fdr_cutoff : Optional[float]
+        If provided, adds significance mask columns using this cutoff
+        on q-values (if available) or p-values
+    inplace : bool
+        Whether to modify adata inplace or return a copy
         
     Returns
     -------
-    Optional[anndata.AnnData]
-        Depends on `inplace` parameter. If `inplace=True`, returns None,
-        otherwise returns a modified copy of the AnnData object.
+    Optional[AnnData]
+        If inplace=False, returns modified copy of adata.
+        If inplace=True, returns None.
+        
+    Raises
+    ------
+    ValueError
+        If results_df is empty
+        If a feature has multiple values for the same term
+        If invalid statistics are requested
     """
+    # Work on a copy if not inplace
     if not inplace:
         adata = adata.copy()
     
     # Make a copy to avoid modifying the original results
     results = results_df.copy()
     
+    # Determine which statistics are available in the results
+    available_stats = [
+        stat for stat in REGRESSION_DEFAULT_STATS 
+        if stat in results.columns
+    ]
+    
+    # Validate stats_to_add
+    if stats_to_add is not None:
+        invalid_stats = set(stats_to_add) - set(REGRESSION_DEFAULT_STATS)
+        if invalid_stats:
+            raise ValueError(
+                f"Invalid statistics requested: {invalid_stats}. "
+                f"Available statistics are: {REGRESSION_DEFAULT_STATS}"
+            )
+        # Filter stats_to_add to only include available statistics
+        stats_to_add = [stat for stat in stats_to_add if stat in available_stats]
+    else:
+        # If None, use all available statistics
+        stats_to_add = available_stats
+    
     # Store in adata.uns (serialization-friendly: only DataFrame, not nested dict)
     adata.uns[key_added] = results
     
-    # Also annotate significant associations in var
-    # Create a significance mask for each coefficient
-    for coef in results["coefficient"].unique():
-        coef_safe = coef.replace(" ", "_").replace("-", "_")
-        
-        # Determine the p-value column to use (FDR-corrected if available)
-        p_col = STATISTICS_DEFS.Q_VALUE if STATISTICS_DEFS.Q_VALUE in results.columns else STATISTICS_DEFS.P_VALUE
-        
-        # Get significant features for this coefficient
-        sig_mask = (results["coefficient"] == coef) & (results[p_col] < fdr_cutoff)
-        sig_features = results.loc[sig_mask, "feature"].unique()
-        
-        # Create a binary indicator in adata.var
-        adata.var[f"sig_{coef_safe}"] = adata.var_names.isin(sig_features)
-        
-        # Filter for the current coefficient
-        coef_results = results[results["coefficient"] == coef]
-        
-        # Create effect size dictionary for all features
-        effect_dict: Dict[str, float] = {}
-        for _, row in coef_results.iterrows():
-            effect_dict[row[STATISTICS_DEFS.FEATURE_NAME]] = row[TIDY_DEFS.ESTIMATE]
-        
-        # Create effect size column for all features or only significant ones
-        if effect_only_for_significant:
-            # Original behavior: add effect sizes only for significant features
-            adata.var[f"effect_{coef_safe}"] = pd.Series(
-                [effect_dict.get(f, np.nan) if f in sig_features else np.nan for f in adata.var_names], 
-                index=adata.var_names
-            )
-        else:
-            # New behavior: add effect sizes for all features
-            adata.var[f"effect_{coef_safe}"] = pd.Series(
-                [effect_dict.get(f, np.nan) for f in adata.var_names], 
-                index=adata.var_names
-            )
-        
-        # Add all statistics as separate columns for all features
-        if add_all_stats:
-            # Raw p-values
-            pval_dict: Dict[str, float] = {}
-            for _, row in coef_results.iterrows():
-                pval_dict[row[STATISTICS_DEFS.FEATURE_NAME]] = row[STATISTICS_DEFS.P_VALUE]
-                
-            adata.var[f"pval_{coef_safe}"] = pd.Series(
-                [pval_dict.get(f, np.nan) for f in adata.var_names], 
-                index=adata.var_names
-            )
-            
-            # FDR-corrected p-values (q-values)
-            if STATISTICS_DEFS.Q_VALUE in coef_results.columns:
-                qval_dict: Dict[str, float] = {}
-                for _, row in coef_results.iterrows():
-                    qval_dict[row[STATISTICS_DEFS.FEATURE_NAME]] = row[STATISTICS_DEFS.Q_VALUE]
-                    
-                adata.var[f"qval_{coef_safe}"] = pd.Series(
-                    [qval_dict.get(f, np.nan) for f in adata.var_names], 
-                    index=adata.var_names
-                )
-            
-            # T-statistics
-            tstat_dict: Dict[str, float] = {}
-            for _, row in coef_results.iterrows():
-                tstat_dict[row[STATISTICS_DEFS.FEATURE_NAME]] = row["statistic"]
-                
-            adata.var[f"tstat_{coef_safe}"] = pd.Series(
-                [tstat_dict.get(f, np.nan) for f in adata.var_names], 
-                index=adata.var_names
-            )
-            
-            # Standard errors
-            stderr_dict: Dict[str, float] = {}
-            for _, row in coef_results.iterrows():
-                stderr_dict[row[STATISTICS_DEFS.FEATURE_NAME]] = row[TIDY_DEFS.STD_ERROR]
-                
-            adata.var[f"stderr_{coef_safe}"] = pd.Series(
-                [stderr_dict.get(f, np.nan) for f in adata.var_names], 
-                index=adata.var_names
-            )
-        else:
-            # Just add the selected p-value column as before
-            pval_dict: Dict[str, float] = {}
-            for _, row in coef_results.iterrows():
-                pval_dict[row["feature"]] = row[p_col]
-                
-            adata.var[f"pval_{coef_safe}"] = pd.Series(
-                [pval_dict.get(f, np.nan) for f in adata.var_names], 
-                index=adata.var_names
-            )
+    # Build term-specific results
+    all_results = _build_term_results(results, stats_to_add, fdr_cutoff)
+    
+    # Join results with adata.var
+    adata.var = adata.var.join(all_results, how='left')
     
     return None if inplace else adata
+
+def _build_term_results(
+    results: pd.DataFrame,
+    stats_to_add: List[str],
+    fdr_cutoff: Optional[float] = None
+) -> pd.DataFrame:
+    """
+    Build a DataFrame of term-specific results from regression output.
+    
+    Parameters
+    ----------
+    results : pd.DataFrame
+        DataFrame with regression results.
+        Must contain TIDY_DEFS.TERM and STATISTICS_DEFS.FEATURE_NAME columns.
+    stats_to_add : List[str]
+        List of statistics to include in the output.
+    fdr_cutoff : Optional[float]
+        If provided, adds significance mask columns using this cutoff
+        on q-values (if available) or p-values
+        
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with features as index and term-specific columns.
+        
+    Raises
+    ------
+    ValueError
+        If results DataFrame is empty
+        If a feature has multiple values for the same term
+    """
+    if results.empty:
+        raise ValueError("Results DataFrame is empty")
+    
+    # Check for duplicate features within terms
+    for term in results[TIDY_DEFS.TERM].unique():
+        term_results = results[results[TIDY_DEFS.TERM] == term]
+        if len(term_results[STATISTICS_DEFS.FEATURE_NAME].unique()) != len(term_results):
+            raise ValueError(
+                f"Found duplicate features for term '{term}'. "
+                "Each feature should have exactly one value per term."
+            )
+    
+    # Create significance mask if cutoff provided
+    if fdr_cutoff is not None:
+        results = results.copy()
+        p_col = STATISTICS_DEFS.Q_VALUE if STATISTICS_DEFS.Q_VALUE in results.columns else STATISTICS_DEFS.P_VALUE
+        results['significance'] = results[p_col] < fdr_cutoff
+        stats_to_add = list(stats_to_add) + ['significance']
+    
+    # Initialize list to store DataFrames for each statistic
+    stat_dfs = []
+    
+    # Process each statistic
+    for stat in stats_to_add:
+        if stat in results.columns:
+            # Get prefix for column names
+            stat_prefix = STATISTICS_ABBREVIATIONS.get(stat, stat.split('_')[0].lower())
+            
+            # Pivot the data for this statistic
+            stat_df = results.pivot(
+                index=STATISTICS_DEFS.FEATURE_NAME,
+                columns=TIDY_DEFS.TERM,
+                values=stat
+            )
+            
+            # Rename columns to include statistic prefix
+            stat_df.columns = [f"{stat_prefix}_{col.replace(' ', '_').replace('-', '_')}" 
+                             for col in stat_df.columns]
+            
+            stat_dfs.append(stat_df)
+    
+    # Combine all statistics
+    if not stat_dfs:
+        logging.warning("No statistics to add")
+        return pd.DataFrame()
+    
+    return pd.concat(stat_dfs, axis=1)
