@@ -27,56 +27,22 @@ from shackett_utils.genomics.mudata_utils import create_minimal_mudata
 from shackett_utils.statistics.constants import STATISTICS_DEFS, FDR_METHODS_DEFS
 from shackett_utils.utils.decorators import suppress_stdout
 
+# Configure MuData to use new update behavior
+md.set_options(pull_on_update=False)
+
 FACTOR_REGRESSION_STR = "mofa_regression_{}"
 
 @suppress_stdout
 def _mofa(
     mdata: md.MuData,
-    n_factors: Optional[int] = None,
-    use_layer: Optional[str] = None,
-    use_var: Optional[str] = None,
-    outfile: Optional[str] = None,
-    seed: int = 42,
+    *args,
     **kwargs
 ) -> None:
     """
     Helper function to run MOFA with suppressed output.
-    
-    Parameters
-    ----------
-    mdata : md.MuData
-        Multi-modal data object
-    n_factors : Optional[int]
-        Number of factors to fit. Not needed when loading a model.
-    use_layer : Optional[str]
-        Layer to use for MOFA, by default None
-    use_var : Optional[str]
-        Variable subset to use, by default None
-    outfile : Optional[str]
-        Path to save/load model, by default None
-    seed : int
-        Random seed for reproducibility, by default 42
-    **kwargs
-        Additional arguments passed to muon.tl.mofa
+    Just wraps muon.tl.mofa to suppress its verbose output.
     """
-    # Default parameters for fitting new models
-    if n_factors is not None:
-        kwargs.update({
-            'n_factors': n_factors,
-            'use_obs': None,
-            'use_var': use_var,
-            'use_layer': use_layer,
-            'convergence_mode': "fast",
-            'verbose': False,
-            'save_metadata': True,
-            'seed': seed
-        })
-    
-    muon.tl.mofa(
-        mdata,
-        outfile=outfile,
-        **kwargs
-    )
+    muon.tl.mofa(mdata, *args, **kwargs)
 
 def run_mofa_factor_scan(
     mdata: md.MuData,
@@ -153,30 +119,31 @@ def run_mofa_factor_scan(
     return results
 
 
-def _calculate_mofa_variance_metrics(mdata: md.MuData, use_layer: Optional[str] = None) -> Dict[str, Any]:
+def _calculate_mofa_variance_metrics(
+    mdata: md.MuData,
+    use_layer: Optional[str] = None,
+) -> Dict[str, Any]:
     """
-    Calculate variance metrics from a MOFA model.
+    Calculate variance metrics from MOFA results.
     
     Parameters
     ----------
     mdata : md.MuData
-        MuData object with fitted MOFA model
+        Multi-modal data object with MOFA results
     use_layer : Optional[str]
         Layer to use for variance calculation, by default None
         
     Returns
     -------
     Dict[str, Any]
-        Dictionary containing variance metrics:
-        - total_variance: total variance explained across all modalities
-        - modality_variance: variance explained per modality
-        - raw_tss: total sum of squares per modality
-        - raw_ess: explained sum of squares per modality
+        Dictionary with variance metrics
     """
-    if "X_mofa" not in mdata.obsm:
-        raise ValueError("No MOFA factors found in .obsm['X_mofa']")
-    if "LFs" not in mdata.varm:
-        raise ValueError("No MOFA loadings found in .varm['LFs']")
+    metrics = {
+        "total_variance": 0.0,
+        "modality_variance": {},
+        "raw_tss": {},
+        "raw_ess": {}
+    }
     
     factors = mdata.obsm["X_mofa"]
     loadings = mdata.varm["LFs"]
