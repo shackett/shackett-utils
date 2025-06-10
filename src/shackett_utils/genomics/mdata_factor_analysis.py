@@ -6,7 +6,10 @@ with different numbers of factors.
 """
 
 from datetime import datetime
+import functools
+import io
 import os
+import sys
 from typing import Dict, List, Tuple, Optional, Iterable, Any, Union
 
 import anndata as ad
@@ -19,86 +22,61 @@ import pandas as pd
 import seaborn as sns
 import statsmodels.formula.api as smf
 from statsmodels.stats.multitest import multipletests
-from ..statistics.constants import STATISTICS_DEFS, FDR_METHODS_DEFS
+
+from shackett_utils.genomics.mudata_utils import create_minimal_mudata
+from shackett_utils.statistics.constants import STATISTICS_DEFS, FDR_METHODS_DEFS
+from shackett_utils.utils.decorators import suppress_stdout
 
 FACTOR_REGRESSION_STR = "mofa_regression_{}"
 
-def create_minimal_mudata(
-    original_mdata: md.MuData,
-    include_layers: Optional[List[str]] = None,
-    include_obsm: bool = True,
-    include_varm: bool = False,
-) -> md.MuData:
+@suppress_stdout
+def _mofa(
+    mdata: md.MuData,
+    n_factors: Optional[int] = None,
+    use_layer: Optional[str] = None,
+    use_var: Optional[str] = None,
+    outfile: Optional[str] = None,
+    seed: int = 42,
+    **kwargs
+) -> None:
     """
-    Create a minimal copy of a MuData object with only essential components
-    to avoid serialization issues.
+    Helper function to run MOFA with suppressed output.
     
     Parameters
     ----------
-    original_mdata : md.MuData
-        Original MuData object to copy
-    include_layers : Optional[List[str]]
-        List of layer names to include in the copy, by default None
-    include_obsm : bool
-        Whether to include obsm matrices, by default True
-    include_varm : bool
-        Whether to include varm matrices, by default False
-        
-    Returns
-    -------
-    md.MuData
-        Minimal MuData object
-        
-    Examples
-    --------
-    >>> # Create a minimal copy with just the log-normalized layer
-    >>> minimal_mdata = create_minimal_mudata(
-    ...     mdata, 
-    ...     include_layers=["log_normalized"], 
-    ...     include_obsm=True
-    ... )
+    mdata : md.MuData
+        Multi-modal data object
+    n_factors : Optional[int]
+        Number of factors to fit. Not needed when loading a model.
+    use_layer : Optional[str]
+        Layer to use for MOFA, by default None
+    use_var : Optional[str]
+        Variable subset to use, by default None
+    outfile : Optional[str]
+        Path to save/load model, by default None
+    seed : int
+        Random seed for reproducibility, by default 42
+    **kwargs
+        Additional arguments passed to muon.tl.mofa
     """
-    # Create dictionary to hold modalities
-    modalities = {}
+    # Default parameters for fitting new models
+    if n_factors is not None:
+        kwargs.update({
+            'n_factors': n_factors,
+            'use_obs': None,
+            'use_var': use_var,
+            'use_layer': use_layer,
+            'convergence_mode': "fast",
+            'verbose': False,
+            'save_metadata': True,
+            'seed': seed
+        })
     
-    # Copy over each modality with minimal data
-    for mod_name, mod in original_mdata.mod.items():
-        # Create basic AnnData with just X, obs, and var
-        new_mod = ad.AnnData(
-            X=mod.X.copy(),
-            obs=mod.obs.copy(),
-            var=mod.var.copy()
-        )
-        
-        # Add selected layers if present
-        if include_layers and hasattr(mod, "layers"):
-            for layer_name in include_layers:
-                if layer_name in mod.layers:
-                    new_mod.layers[layer_name] = mod.layers[layer_name].copy()
-        
-        # Add obsm matrices if requested
-        if include_obsm and hasattr(mod, "obsm"):
-            for obsm_key in mod.obsm.keys():
-                new_mod.obsm[obsm_key] = mod.obsm[obsm_key].copy()
-        
-        # Add varm matrices if requested
-        if include_varm and hasattr(mod, "varm"):
-            for varm_key in mod.varm.keys():
-                new_mod.varm[varm_key] = mod.varm[varm_key].copy()
-        
-        # Add to modalities dictionary
-        modalities[mod_name] = new_mod
-    
-    # Create MuData object with dictionary of modalities
-    minimal_mdata = md.MuData(modalities)
-    
-    # Copy global obsm if present and requested
-    if include_obsm and hasattr(original_mdata, "obsm"):
-        for obsm_key in original_mdata.obsm.keys():
-            minimal_mdata.obsm[obsm_key] = original_mdata.obsm[obsm_key].copy()
-    
-    return minimal_mdata
-
+    muon.tl.mofa(
+        mdata,
+        outfile=outfile,
+        **kwargs
+    )
 
 def run_mofa_factor_scan(
     mdata: md.MuData,
@@ -110,105 +88,62 @@ def run_mofa_factor_scan(
     overwrite: bool = False,
 ) -> Dict[int, Dict[str, str]]:
     """
-    Run MOFA for multiple factor values and save results to files.
+    Run MOFA with different numbers of factors and save results.
     
     Parameters
     ----------
     mdata : md.MuData
         Multi-modal data object
-    factor_range : Iterable[int]
-        Range of factors to test, by default range(5, 31, 5)
-    use_layer : Optional[str]
-        Layer to use for analysis, by default "log2_centered"
-    use_var : Optional[str]
-        Variable selection to use, by default None
-    seed : int
+    factor_range : Iterable[int], optional
+        Range of factor numbers to try, by default range(5, 31, 5)
+    use_layer : Optional[str], optional
+        Layer to use for MOFA, by default "log2_centered"
+    use_var : Optional[str], optional
+        Variable subset to use, by default None
+    seed : int, optional
         Random seed for reproducibility, by default 42
-    models_dir : str
-        Directory to store result files, by default "mofa_models"
-    overwrite : bool
+    models_dir : str, optional
+        Directory to save models, by default "mofa_models"
+    overwrite : bool, optional
         Whether to overwrite existing results, by default False
         
     Returns
     -------
     Dict[int, Dict[str, str]]
-        Dictionary with file paths for each factor value
-        
-    Examples
-    --------
-    >>> # Run MOFA with different numbers of factors
-    >>> factor_results = run_mofa_factor_scan(
-    ...     mdata, 
-    ...     factor_range=range(5, 51, 5),
-    ...     use_layer="log2_centered",
-    ...     models_dir="mofa_results"
-    ... )
+        Dictionary mapping number of factors to file paths
     """
-    # Create directory to store MOFA results
+    # Create output directory if it doesn't exist
     os.makedirs(models_dir, exist_ok=True)
     
-    # Initialize results dictionary
+    # Store results
     results = {}
     
-    # Run MOFA for each factor value
+    # Create a copy of the data to avoid modifying the original
+    clean_mdata = mdata.copy()
+    
     for n_factors in factor_range:
-        # Define paths for output files
-        variance_file = os.path.join(models_dir, f"mofa_{n_factors}_factors_variance.npz")
-        factors_file = os.path.join(models_dir, f"mofa_{n_factors}_factors_scores.npy")
+        # Set up file paths
+        model_file = os.path.join(models_dir, f"model_{n_factors}.h5")
         
-        # Skip if files exist and we're not overwriting
-        if not overwrite and os.path.exists(variance_file) and os.path.exists(factors_file):
-            print(f"Results for {n_factors} factors already exist.")
-            results[n_factors] = {
-                "variance_file": variance_file,
-                "factors_file": factors_file
-            }
+        # Skip if files exist and not overwriting
+        if not overwrite and os.path.exists(model_file):
+            results[n_factors] = {"model_file": model_file}
             continue
         
-        print(f"[{_get_timestamp()}] Running MOFA with {n_factors} factors...")
-        
-        # Create a minimal copy to avoid serialization issues
-        clean_mdata = create_minimal_mudata(
-            mdata, 
-            include_layers=[use_layer] if use_layer else None
-        )
-        
         try:
-            # Run MOFA without saving to file
-            muon.tl.mofa(
+            # Run MOFA
+            _mofa(
                 clean_mdata,
                 n_factors=n_factors,
-                use_obs=None,
-                use_var=use_var,
                 use_layer=use_layer,
-                outfile=None,  # Don't save to file
-                seed=seed,
-                convergence_mode="fast",
-                verbose=False,
-                save_metadata=True
+                use_var=use_var,
+                outfile=model_file,
+                seed=seed
             )
             
-            # Extract variance information
-            if "mofa" in clean_mdata.uns and "variance" in clean_mdata.uns["mofa"]:
-                variance_data = clean_mdata.uns["mofa"]["variance"]
-                
-                # Save variance data
-                np.savez(variance_file, **variance_data)
-                
-                # Save factor scores if available
-                if "X_mofa" in clean_mdata.obsm:
-                    factor_scores = clean_mdata.obsm["X_mofa"]
-                    np.save(factors_file, factor_scores)
-                
-                # Store file paths in results
-                results[n_factors] = {
-                    "variance_file": variance_file,
-                    "factors_file": factors_file
-                }
-                
-                print(f"[{_get_timestamp()}] Saved results for {n_factors} factors.")
-            else:
-                print(f"No MOFA results found for {n_factors} factors.")
+            # Store file paths
+            results[n_factors] = {"model_file": model_file}
+            print(f"[{_get_timestamp()}] Saved results for {n_factors} factors.")
                 
         except Exception as e:
             print(f"[{_get_timestamp()}] Error with {n_factors} factors: {str(e)}")
@@ -218,60 +153,123 @@ def run_mofa_factor_scan(
     return results
 
 
-def calculate_variance_metrics(
-    results_dict: Dict[int, Dict[str, str]]
-) -> Dict[int, Dict[str, Any]]:
+def _calculate_mofa_variance_metrics(mdata: md.MuData, use_layer: Optional[str] = None) -> Dict[str, Any]:
     """
-    Calculate variance metrics from saved MOFA results.
+    Calculate variance metrics from a MOFA model.
     
     Parameters
     ----------
-    results_dict : Dict[int, Dict[str, str]]
-        Dictionary with file paths for each factor value
+    mdata : md.MuData
+        MuData object with fitted MOFA model
+    use_layer : Optional[str]
+        Layer to use for variance calculation, by default None
         
     Returns
     -------
-    Dict[int, Dict[str, Any]]
-        Dictionary with variance metrics for each factor value
+    Dict[str, Any]
+        Dictionary containing variance metrics:
+        - total_variance: total variance explained across all modalities
+        - modality_variance: variance explained per modality
+        - raw_tss: total sum of squares per modality
+        - raw_ess: explained sum of squares per modality
+    """
+    if "X_mofa" not in mdata.obsm:
+        raise ValueError("No MOFA factors found in .obsm['X_mofa']")
+    if "LFs" not in mdata.varm:
+        raise ValueError("No MOFA loadings found in .varm['LFs']")
+    
+    factors = mdata.obsm["X_mofa"]
+    loadings = mdata.varm["LFs"]
+    
+    # Calculate TSS and ESS for each modality
+    total_ss = {}
+    ess = {}
+    
+    for modality, mod_data in mdata.mod.items():
+        # Get original data
+        X = mod_data.layers[use_layer] if use_layer in mod_data.layers else mod_data.X
+        total_ss[modality] = np.sum(X**2)
         
-    Examples
-    --------
-    >>> # Calculate variance metrics from saved results
-    >>> metrics = calculate_variance_metrics(factor_results)
-    >>> # Print total variance for each number of factors
-    >>> for n_factors, data in metrics.items():
-    ...     print(f"{n_factors} factors: {data['total_variance']:.4f}")
+        # Get the var_names for this modality
+        mod_vars = mod_data.var_names
+        
+        # Create boolean mask for this modality's variables
+        var_mask = np.isin(mdata.var_names, mod_vars)
+        
+        # Extract loadings for this modality using the mask
+        mod_loadings = loadings[var_mask]
+        
+        # Calculate explained sum of squares
+        # Reconstruct data using factors and loadings
+        X_reconstructed = factors @ mod_loadings.T
+        ess[modality] = np.sum(X_reconstructed**2)
+    
+    # Calculate variance explained per modality
+    modality_variance = {
+        modality: (ess[modality] / total_ss[modality]) * 100
+        for modality in total_ss.keys()
+    }
+    
+    # Calculate total variance as sum of ESS divided by sum of TSS
+    total_ess = sum(ess.values())
+    total_tss = sum(total_ss.values())
+    total_variance = (total_ess / total_tss) * 100
+    
+    return {
+        "total_variance": total_variance,
+        "modality_variance": modality_variance,
+        "raw_tss": total_ss,
+        "raw_ess": ess
+    }
+
+
+def calculate_variance_metrics(
+    factor_results: Dict[int, Dict[str, str]],
+    mdata: md.MuData,
+    use_layer: Optional[str] = None,
+) -> Dict[int, Dict[str, float]]:
+    """
+    Calculate variance metrics for each factor model.
+    
+    Parameters
+    ----------
+    factor_results : Dict[int, Dict[str, str]]
+        Dictionary mapping number of factors to file paths
+    mdata : md.MuData
+        Multi-modal data object
+    use_layer : Optional[str], optional
+        Layer to use for variance calculation, by default None
+        
+    Returns
+    -------
+    Dict[int, Dict[str, float]]
+        Dictionary mapping number of factors to variance metrics
     """
     metrics = {}
     
-    for n_factors, paths in results_dict.items():
+    for n_factors, paths in factor_results.items():
         try:
-            variance_file = paths["variance_file"]
-            
-            # Load variance data
-            variance_data = dict(np.load(variance_file))
+            # Load model into a fresh copy of the data
+            model_file = paths["model_file"]
+            model_data = mdata.copy()
+            _mofa(model_data, outfile=model_file)
             
             # Calculate metrics
-            modality_variance = {k: np.sum(v) for k, v in variance_data.items()}
-            total_variance = sum(modality_variance.values())
-            
-            # Accumulate per-factor variance
-            per_factor_variance = _calculate_per_factor_variance(variance_data)
-            
-            # Store metrics
-            metrics[n_factors] = {
-                "total_variance": total_variance,
-                "modality_variance": modality_variance,
-                "per_factor_variance": per_factor_variance.tolist() if per_factor_variance is not None else None,
-                "factor_view_variance": {k: v.tolist() for k, v in variance_data.items()}
-            }
-            
-            print(f"Calculated metrics for {n_factors} factors. Total variance: {total_variance:.4f}")
+            factor_metrics = _calculate_mofa_variance_metrics(model_data, use_layer=use_layer)
+            metrics[n_factors] = factor_metrics
+            print(f"Calculated metrics for {n_factors} factors. Total variance: {factor_metrics['total_variance']:.2f}%")
             
         except Exception as e:
             print(f"Error calculating metrics for {n_factors} factors: {str(e)}")
             import traceback
             traceback.print_exc()
+            # Initialize with empty metrics to avoid KeyError
+            metrics[n_factors] = {
+                "total_variance": 0.0,
+                "modality_variance": {mod: 0.0 for mod in mdata.mod.keys()},
+                "raw_tss": {mod: 0.0 for mod in mdata.mod.keys()},
+                "raw_ess": {mod: 0.0 for mod in mdata.mod.keys()}
+            }
     
     return metrics
 
@@ -360,18 +358,6 @@ def visualize_variance_explained(
     -------
     plt.Figure
         Created figure
-        
-    Examples
-    --------
-    >>> # Calculate optimal factors using different criteria
-    >>> optimal_factors = {
-    ...     "elbow": determine_optimal_factors(metrics, criterion='elbow'),
-    ...     "threshold": determine_optimal_factors(metrics, criterion='threshold'),
-    ...     "balanced": determine_optimal_factors(metrics, criterion='balanced')
-    ... }
-    >>> # Visualize variance explained with optimal factors highlighted
-    >>> fig = visualize_variance_explained(metrics, optimal_factors, user_factors=15)
-    >>> plt.show()
     """
     # Extract factors and variance values
     factors = sorted([k for k in metrics.keys() if metrics[k]["total_variance"] is not None])
@@ -433,11 +419,14 @@ def visualize_variance_explained(
         )
     
     plt.xlabel("Number of factors")
-    plt.ylabel("Total variance explained")
+    plt.ylabel("Total variance explained (%)")
     plt.title("MOFA performance vs. number of factors")
     plt.grid(True, alpha=0.3)
     plt.legend(loc="best")
     plt.tight_layout()
+    
+    # Set y-axis to percentage scale
+    plt.ylim(0, min(100, max(variance) * 1.1))
     
     # Save figure if requested
     if save_path:
@@ -593,12 +582,6 @@ def visualize_modality_variance(
     -------
     plt.Figure
         Created figure
-        
-    Examples
-    --------
-    >>> # Visualize modality-specific variance with optimal factors highlighted
-    >>> fig = visualize_modality_variance(metrics, optimal_factors, user_factors=15)
-    >>> plt.show()
     """
     # Extract factors with valid metrics
     factors = sorted([k for k in metrics.keys() if metrics[k]["total_variance"] is not None])
@@ -665,15 +648,13 @@ def visualize_modality_variance(
         )
     
     plt.xlabel("Number of factors")
-    plt.ylabel("Variance explained")
+    plt.ylabel("Variance explained (%)")
     plt.title("Modality-specific variance explained")
-    plt.grid(True, alpha=0.3)
     
-    # Adjust legend to avoid overlap
-    handles, labels = plt.gca().get_legend_handles_labels()
-    by_label = dict(zip(labels, handles))
-    plt.legend(by_label.values(), by_label.keys(), loc="best", fontsize="small")
+    # Set y-axis to percentage scale
+    plt.ylim(0, min(100, mod_df["variance"].max() * 1.1))
     
+    plt.legend(title="Modality", bbox_to_anchor=(1.05, 1), loc="upper left")
     plt.tight_layout()
     
     # Save figure if requested
@@ -772,328 +753,6 @@ def visualize_factor_scan_results(
         print(f"  User-specified: {user_factors} factors")
     
     return figures
-
-
-def load_optimal_mofa_model(
-    results_dict: Dict[int, Dict[str, str]],
-    n_factors: int,
-    mdata: Optional[md.MuData] = None,
-) -> md.MuData:
-    """
-    Load MOFA results for a specific number of factors into a MuData object.
-    
-    Parameters
-    ----------
-    results_dict : Dict[int, Dict[str, str]]
-        Dictionary with file paths for each factor value
-    n_factors : int
-        Number of factors to load
-    mdata : Optional[md.MuData]
-        MuData object to load results into, by default None
-        
-    Returns
-    -------
-    md.MuData
-        MuData object with MOFA results
-        
-    Examples
-    --------
-    >>> # Load optimal MOFA model with 15 factors
-    >>> optimal_mdata = load_optimal_mofa_model(factor_results, 15, mdata)
-    """
-    if n_factors not in results_dict:
-        raise ValueError(f"No results available for {n_factors} factors")
-    
-    # Get file paths
-    variance_file = results_dict[n_factors]["variance_file"]
-    factors_file = results_dict[n_factors]["factors_file"]
-    
-    # Load variance data
-    variance_data = dict(np.load(variance_file))
-    
-    # Load factor scores
-    factor_scores = np.load(factors_file)
-    
-    # If no MuData object is provided, create a minimal one
-    if mdata is None:
-        # Create minimal MuData with just factor scores
-        mdata = md.MuData()
-        mdata.obsm["X_mofa"] = factor_scores
-    else:
-        # Add factor scores to existing MuData
-        mdata.obsm["X_mofa"] = factor_scores
-    
-    # Add variance data
-    if "mofa" not in mdata.uns:
-        mdata.uns["mofa"] = {}
-    
-    mdata.uns["mofa"]["variance"] = variance_data
-    mdata.uns["mofa"]["params"] = {
-        "model": {"n_factors": n_factors}
-    }
-    
-    # Return MuData with MOFA results
-    return mdata
-
-
-def run_complete_mofa_analysis(
-    mdata: md.MuData,
-    factor_range: Iterable[int] = range(5, 51, 5),
-    use_layer: Optional[str] = "log2_centered",
-    use_var: Optional[str] = None,
-    seed: int = 42,
-    models_dir: str = "mofa_models",
-    overwrite: bool = False,
-    user_factors: Optional[int] = None,
-    save_dir: Optional[str] = None,
-) -> Dict[str, Any]:
-    """
-    Run a complete MOFA analysis workflow including factor scan, visualization,
-    and optimal factor determination.
-    
-    Parameters
-    ----------
-    mdata : md.MuData
-        Multi-modal data object
-    factor_range : Iterable[int]
-        Range of factors to test, by default range(5, 51, 5)
-    use_layer : Optional[str]
-        Layer to use for analysis, by default "log2_centered"
-    use_var : Optional[str]
-        Variable selection to use, by default None
-    seed : int
-        Random seed for reproducibility, by default 42
-    models_dir : str
-        Directory to store model files, by default "mofa_models"
-    overwrite : bool
-        Whether to overwrite existing results, by default False
-    user_factors : Optional[int]
-        User-specified number of factors, by default None
-    save_dir : Optional[str]
-        Directory to save figures, by default None
-        
-    Returns
-    -------
-    Dict[str, Any]
-        Dictionary with complete analysis results
-        
-    Examples
-    --------
-    >>> # Run complete MOFA analysis workflow
-    >>> results = run_complete_mofa_analysis(
-    ...     mdata,
-    ...     factor_range=range(5, 51, 5),
-    ...     use_layer="log2_centered",
-    ...     models_dir="mofa_results",
-    ...     user_factors=20,
-    ...     save_dir="mofa_figures"
-    ... )
-    >>> 
-    >>> # Access optimal models
-    >>> optimal_balanced = results["optimal_models"]["balanced"]
-    >>> 
-    >>> # Display figures
-    >>> import matplotlib.pyplot as plt
-    >>> for name, fig in results["figures"].items():
-    ...     plt.figure(fig.number)
-    ...     plt.show()
-    """
-    print(f"[{_get_timestamp()}] Starting MOFA analysis workflow...")
-    
-    # Step 1: Run MOFA factor scan
-    print(f"[{_get_timestamp()}] Running MOFA factor scan...")
-    factor_results = run_mofa_factor_scan(
-        mdata,
-        factor_range=factor_range,
-        use_layer=use_layer,
-        use_var=use_var,
-        seed=seed,
-        models_dir=models_dir,
-        overwrite=overwrite
-    )
-    
-    # Step 2: Calculate variance metrics
-    print(f"[{_get_timestamp()}] Calculating variance metrics...")
-    metrics = calculate_variance_metrics(factor_results)
-    
-    # Step 3: Determine optimal number of factors
-    print(f"[{_get_timestamp()}] Determining optimal number of factors...")
-    optimal_factors = {
-        "elbow": determine_optimal_factors(metrics, criterion="elbow"),
-        "threshold": determine_optimal_factors(metrics, criterion="threshold", threshold=0.01),
-        "balanced": determine_optimal_factors(metrics, criterion="balanced")
-    }
-    
-    # Filter out None values
-    optimal_factors = {k: v for k, v in optimal_factors.items() if v is not None}
-    
-    # Step 4: Visualize factor scan results
-    print(f"[{_get_timestamp()}] Visualizing factor scan results...")
-    figures = visualize_factor_scan_results(
-        metrics,
-        user_factors=user_factors,
-        figsize=(12, 8),
-        save_dir=save_dir
-    )
-    
-    # Step 5: Load optimal models
-    print(f"[{_get_timestamp()}] Loading optimal models...")
-    optimal_models = {}
-    
-    for method, n_factors in optimal_factors.items():
-        try:
-            optimal_models[method] = load_optimal_mofa_model(
-                factor_results,
-                n_factors,
-                mdata=None  # Don't load into original MuData
-            )
-            print(f"Loaded optimal model for {method} method: {n_factors} factors")
-        except Exception as e:
-            print(f"Error loading optimal model for {method} method: {str(e)}")
-    
-    # Load user-specified model if provided
-    if user_factors:
-        try:
-            optimal_models["user"] = load_optimal_mofa_model(
-                factor_results,
-                user_factors,
-                mdata=None  # Don't load into original MuData
-            )
-            print(f"Loaded user-specified model: {user_factors} factors")
-        except Exception as e:
-            print(f"Error loading user-specified model: {str(e)}")
-    
-    print(f"[{_get_timestamp()}] MOFA analysis workflow completed.")
-    
-    return {
-        "factor_results": factor_results,
-        "metrics": metrics,
-        "optimal_factors": optimal_factors,
-        "figures": figures,
-        "optimal_models": optimal_models
-    }
-
-
-def plot_mofa_factor_histograms(
-    mdata,
-    factors: Optional[Union[int, List[int]]] = None,
-    n_bins: int = 30,
-    n_cols: int = 3,
-    figsize: Tuple[float, float] = None,
-    kde: bool = True,
-    color: str = 'steelblue',
-    return_fig: bool = False
-):
-    """
-    Plot histograms of MOFA factor values.
-    
-    Parameters
-    ----------
-    mdata : MuData
-        MuData object with MOFA results
-    factors : int or list of ints, optional
-        Factors to plot. If None, all factors are plotted.
-    n_bins : int, default=30
-        Number of bins for histograms
-    n_cols : int, default=3
-        Number of columns in the grid plot
-    figsize : tuple, optional
-        Figure size
-    kde : bool, default=True
-        Whether to overlay a kernel density estimate
-    color : str, default='steelblue'
-        Color for the histogram bars
-    return_fig : bool, default=False
-        Whether to return the figure object
-    
-    Returns
-    -------
-    matplotlib.figure.Figure, optional
-        Figure object, if return_fig is True
-    """
-    # Extract MOFA factors
-    X_mofa = mdata.obsm["X_mofa"]
-    
-    # Get number of factors
-    n_factors = X_mofa.shape[1]
-    
-    # Select factors to plot
-    if factors is None:
-        factors = list(range(n_factors))
-    elif isinstance(factors, int):
-        factors = [factors]
-    
-    # Create a DataFrame with factor values
-    df = pd.DataFrame(
-        X_mofa[:, factors],
-        index=mdata.obs_names,
-        columns=[f"Factor {i+1}" for i in factors]
-    )
-    
-    # Calculate number of rows needed
-    n_factors_to_plot = len(factors)
-    n_rows = int(np.ceil(n_factors_to_plot / n_cols))
-    
-    # Set up the figure
-    if figsize is None:
-        figsize = (4 * n_cols, 3 * n_rows)
-    
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
-    
-    # Handle single subplot case
-    if n_factors_to_plot == 1:
-        axes = np.array([axes])
-    
-    # Flatten axes for easy iteration
-    axes = axes.flatten()
-    
-    # Plot each factor
-    for i, factor_idx in enumerate(factors):
-        if i < len(axes):
-            ax = axes[i]
-            factor_name = f"Factor {factor_idx+1}"
-            
-            # Get factor values
-            factor_values = df[factor_name]
-            
-            # Plot histogram
-            sns.histplot(
-                factor_values,
-                bins=n_bins,
-                kde=kde,
-                color=color,
-                ax=ax
-            )
-            
-            # Set labels and title
-            ax.set_xlabel("Factor Value")
-            ax.set_ylabel("Frequency")
-            ax.set_title(f"Distribution of {factor_name}")
-            
-            # Add vertical line at mean
-            mean_val = factor_values.mean()
-            ax.axvline(mean_val, color='red', linestyle='--', 
-                       label=f'Mean: {mean_val:.2f}')
-            
-            # Add vertical line at median
-            median_val = factor_values.median()
-            ax.axvline(median_val, color='green', linestyle=':', 
-                       label=f'Median: {median_val:.2f}')
-            
-            # Add legend
-            ax.legend(fontsize='small')
-    
-    # Remove any unused subplots
-    for i in range(n_factors_to_plot, len(axes)):
-        fig.delaxes(axes[i])
-    
-    plt.tight_layout()
-    
-    if return_fig:
-        return fig
-    else:
-        plt.show()
-
 
 def regress_factors_with_formula(
     mdata: MuData,

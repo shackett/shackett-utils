@@ -185,7 +185,7 @@ def _build_term_results(
         List of statistics to include in the output.
     fdr_cutoff : Optional[float]
         If provided, adds significance mask columns using this cutoff
-        on q-values (if available) or p-values
+        on q-values. If q-values are not present, a warning is logged.
         
     Returns
     -------
@@ -210,12 +210,17 @@ def _build_term_results(
                 "Each feature should have exactly one value per term."
             )
     
-    # Create significance mask if cutoff provided
+    # Create significance mask if cutoff provided and q-values are present
     if fdr_cutoff is not None:
-        results = results.copy()
-        p_col = STATISTICS_DEFS.Q_VALUE if STATISTICS_DEFS.Q_VALUE in results.columns else STATISTICS_DEFS.P_VALUE
-        results['significance'] = results[p_col] < fdr_cutoff
-        stats_to_add = list(stats_to_add) + ['significance']
+        if STATISTICS_DEFS.Q_VALUE in results.columns:
+            results = results.copy()
+            results['significance'] = results[STATISTICS_DEFS.Q_VALUE] < fdr_cutoff
+            stats_to_add = list(stats_to_add) + ['significance']
+        else:
+            logging.warning(
+                "FDR cutoff was provided but no q-values found in results. "
+                "Significance mask will not be created."
+            )
     
     # Initialize list to store DataFrames for each statistic
     stat_dfs = []
@@ -244,4 +249,6 @@ def _build_term_results(
         logging.warning("No statistics to add")
         return pd.DataFrame()
     
-    return pd.concat(stat_dfs, axis=1)
+    # Concatenate and drop columns that are all NaN
+    result = pd.concat(stat_dfs, axis=1).dropna(axis=1, how='all')
+    return result

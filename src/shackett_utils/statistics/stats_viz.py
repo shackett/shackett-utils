@@ -9,111 +9,6 @@ from scipy.stats import kstest
 from typing import Optional, Tuple, Dict, List, Union
 from .constants import STATISTICS_DEFS
 
-def plot_term_pvalue_histogram(
-    data: pd.DataFrame,
-    term: str,
-    figsize: Tuple[int, int] = (12, 4),
-    include_stats: bool = True,
-    show_ks_test: bool = True,
-    fdr_cutoff: float = 0.05,
-    title_prefix: str = "",
-) -> plt.Figure:
-    """
-    Plot p-value histograms and QQ plot for a single term.
-
-    Parameters
-    ----------
-    data : pd.DataFrame
-        DataFrame containing p-values and optionally FDR values for a single term.
-        Must have columns STATISTICS_DEFS.P_VALUE and optionally STATISTICS_DEFS.Q_VALUE.
-    term : str
-        Name of the term being plotted.
-    figsize : Tuple[int, int], optional
-        Figure size (width, height) in inches. Default is (12, 4).
-    include_stats : bool, optional
-        Whether to include summary statistics on the plots. Default is True.
-    show_ks_test : bool, optional
-        Whether to show Kolmogorov-Smirnov test results comparing p-value distribution
-        to the uniform distribution. Default is True.
-    fdr_cutoff : float, optional
-        Significance threshold for FDR-corrected p-values. Default is 0.05.
-    title_prefix : str, optional
-        Prefix to add to the plot title. Default is "".
-
-    Returns
-    -------
-    plt.Figure
-        The generated matplotlib figure.
-    """
-    n_panels = 3 if STATISTICS_DEFS.Q_VALUE in data.columns else 2
-    fig, axes = plt.subplots(1, n_panels, figsize=figsize)
-    fig.suptitle(f"{title_prefix}P-value Distribution for Term: {term}", fontsize=16)
-
-    # Raw p-values
-    sns.histplot(data[STATISTICS_DEFS.P_VALUE], bins=20, kde=True, ax=axes[0])
-    axes[0].set_title("Raw P-values")
-    axes[0].set_xlabel("P-value")
-    axes[0].set_ylabel("Count")
-
-    # Add reference uniform distribution line
-    x = np.linspace(0, 1, 100)
-    y = len(data) * 0.05  # Adjust height based on data
-    axes[0].plot(x, [y] * 100, 'r--', label='Uniform Distribution')
-    axes[0].legend()
-
-    # Add summary statistics
-    if include_stats:
-        avg_p = data[STATISTICS_DEFS.P_VALUE].mean()
-        median_p = data[STATISTICS_DEFS.P_VALUE].median()
-        sig_count = sum(data[STATISTICS_DEFS.P_VALUE] < 0.05)
-        sig_pct = 100 * sig_count / len(data)
-        stats_text = f"Mean: {avg_p:.4f}\nMedian: {median_p:.4f}\n"
-        stats_text += f"Significant: {sig_count}/{len(data)} ({sig_pct:.1f}%)"
-        axes[0].text(0.05, 0.95, stats_text,
-                    transform=axes[0].transAxes,
-                    verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-
-    # QQ plot of p-values
-    pvals = np.sort(data[STATISTICS_DEFS.P_VALUE])
-    expected = np.linspace(0, 1, len(pvals) + 1)[1:]
-    axes[1].scatter(expected, pvals, alpha=0.5)
-    axes[1].plot([0, 1], [0, 1], 'r--')
-    axes[1].set_title("P-value QQ Plot")
-    axes[1].set_xlabel("Expected P-value")
-    axes[1].set_ylabel("Observed P-value")
-
-    # FDR-corrected p-values (if available)
-    if n_panels == 3:
-        sns.histplot(data[STATISTICS_DEFS.Q_VALUE], bins=20, kde=True, ax=axes[2])
-        axes[2].set_title("FDR-corrected P-values (Benjamini-Hochberg)")
-        axes[2].set_xlabel("Adjusted P-value")
-        axes[2].set_ylabel("Count")
-        axes[2].plot(x, [y] * 100, 'r--', label='Uniform Distribution')
-        axes[2].legend()
-        if include_stats:
-            avg_fdr = data[STATISTICS_DEFS.Q_VALUE].mean()
-            median_fdr = data[STATISTICS_DEFS.Q_VALUE].median()
-            sig_count_fdr = sum(data[STATISTICS_DEFS.Q_VALUE] < fdr_cutoff)
-            sig_pct_fdr = 100 * sig_count_fdr / len(data)
-            stats_text = f"Mean: {avg_fdr:.4f}\nMedian: {median_fdr:.4f}\n"
-            stats_text += f"Significant: {sig_count_fdr}/{len(data)} ({sig_pct_fdr:.1f}%)"
-            axes[2].text(0.05, 0.95, stats_text,
-                        transform=axes[2].transAxes,
-                        verticalalignment='top',
-                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-
-    # KS test
-    if show_ks_test:
-        ks_stat, ks_pval = kstest(data[STATISTICS_DEFS.P_VALUE], 'uniform')
-        fig.text(0.5, 0.01,
-                 f"Kolmogorov-Smirnov test against uniform distribution: "
-                 f"statistic={ks_stat:.4f}, p-value={ks_pval:.4f}",
-                 ha='center', fontsize=12)
-
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    return fig
-
 def plot_pvalue_histograms(
     data: pd.DataFrame,
     term_column: str = STATISTICS_DEFS.TERM,
@@ -230,3 +125,168 @@ def plot_pvalue_histograms(
                 )
 
     return figures 
+
+def plot_term_pvalue_histogram(
+    data: pd.DataFrame,
+    term: str,
+    figsize: Tuple[int, int] = (12, 4),
+    include_stats: bool = True,
+    show_ks_test: bool = True,
+    fdr_cutoff: float = 0.05,
+    title_prefix: str = "",
+) -> plt.Figure:
+    """
+    Plot p-value histograms and QQ plot for a single term.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        DataFrame containing p-values and optionally FDR values for a single term.
+        Must have columns STATISTICS_DEFS.P_VALUE and optionally STATISTICS_DEFS.Q_VALUE.
+    term : str
+        Name of the term being plotted.
+    figsize : Tuple[int, int], optional
+        Figure size (width, height) in inches. Default is (12, 4).
+    include_stats : bool, optional
+        Whether to include summary statistics on the plots. Default is True.
+    show_ks_test : bool, optional
+        Whether to show Kolmogorov-Smirnov test results comparing p-value distribution
+        to the uniform distribution. Default is True.
+    fdr_cutoff : float, optional
+        Significance threshold for FDR-corrected p-values. Default is 0.05.
+    title_prefix : str, optional
+        Prefix to add to the plot title. Default is "".
+
+    Returns
+    -------
+    plt.Figure
+        The generated matplotlib figure.
+    """
+    n_panels = 3 if STATISTICS_DEFS.Q_VALUE in data.columns else 2
+    fig, axes = plt.subplots(1, n_panels, figsize=figsize)
+    fig.suptitle(f"{title_prefix}P-value Distribution for Term: {term}", fontsize=16)
+
+    # Plot raw p-values histogram
+    _plot_raw_pvalue_histogram(data, axes[0], include_stats)
+    
+    # Plot QQ plot
+    _plot_pvalue_qq(data, axes[1])
+    
+    # Plot FDR-corrected p-values if available
+    if n_panels == 3:
+        _plot_qvalue_histogram(data, axes[2], fdr_cutoff, include_stats)
+
+    # KS test
+    if show_ks_test:
+        ks_stat, ks_pval = kstest(data[STATISTICS_DEFS.P_VALUE], 'uniform')
+        fig.text(0.5, 0.01,
+                 f"Kolmogorov-Smirnov test against uniform distribution: "
+                 f"statistic={ks_stat:.4f}, p-value={ks_pval:.4f}",
+                 ha='center', fontsize=12)
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    return fig
+
+def _plot_raw_pvalue_histogram(
+    data: pd.DataFrame,
+    ax: plt.Axes,
+    include_stats: bool = True
+) -> None:
+    """Plot histogram of raw p-values with uniform distribution reference line.
+    
+    Parameters
+    ----------
+    data : pd.DataFrame
+        DataFrame containing p-values
+    ax : plt.Axes
+        Matplotlib axes to plot on
+    include_stats : bool
+        Whether to include summary statistics on the plot
+    """
+    sns.histplot(data[STATISTICS_DEFS.P_VALUE], bins=20, kde=True, ax=ax)
+    ax.set_title("Raw P-values")
+    ax.set_xlabel("P-value")
+    ax.set_ylabel("Count")
+
+    # Add reference uniform distribution line
+    x = np.linspace(0, 1, 100)
+    y = len(data) * 0.05  # Adjust height based on data
+    ax.plot(x, [y] * 100, 'r--', label='Uniform Distribution')
+    ax.legend()
+
+    if include_stats:
+        avg_p = data[STATISTICS_DEFS.P_VALUE].mean()
+        median_p = data[STATISTICS_DEFS.P_VALUE].median()
+        sig_count = sum(data[STATISTICS_DEFS.P_VALUE] < 0.05)
+        sig_pct = 100 * sig_count / len(data)
+        stats_text = f"Mean: {avg_p:.4f}\nMedian: {median_p:.4f}\n"
+        stats_text += f"Significant: {sig_count}/{len(data)} ({sig_pct:.1f}%)"
+        ax.text(0.05, 0.95, stats_text,
+                transform=ax.transAxes,
+                verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+def _plot_pvalue_qq(
+    data: pd.DataFrame,
+    ax: plt.Axes
+) -> None:
+    """Plot QQ plot of p-values against uniform distribution.
+    
+    Parameters
+    ----------
+    data : pd.DataFrame
+        DataFrame containing p-values
+    ax : plt.Axes
+        Matplotlib axes to plot on
+    """
+    pvals = np.sort(data[STATISTICS_DEFS.P_VALUE])
+    expected = np.linspace(0, 1, len(pvals) + 1)[1:]
+    ax.scatter(expected, pvals, alpha=0.5)
+    ax.plot([0, 1], [0, 1], 'r--')
+    ax.set_title("P-value QQ Plot")
+    ax.set_xlabel("Expected P-value")
+    ax.set_ylabel("Observed P-value")
+
+def _plot_qvalue_histogram(
+    data: pd.DataFrame,
+    ax: plt.Axes,
+    fdr_cutoff: float = 0.05,
+    include_stats: bool = True
+) -> None:
+    """Plot histogram of FDR-corrected p-values with cutoff line.
+    
+    Parameters
+    ----------
+    data : pd.DataFrame
+        DataFrame containing q-values
+    ax : plt.Axes
+        Matplotlib axes to plot on
+    fdr_cutoff : float
+        FDR significance threshold to mark with vertical line
+    include_stats : bool
+        Whether to include summary statistics on the plot
+    """
+    sns.histplot(data[STATISTICS_DEFS.Q_VALUE], bins=20, kde=True, ax=ax)
+    ax.set_title("FDR-corrected P-values (Benjamini-Hochberg)")
+    ax.set_xlabel("Adjusted P-value")
+    ax.set_ylabel("Count")
+    
+    # Set x-axis limits from 0 to 1
+    ax.set_xlim(0, 1)
+    
+    # Add vertical line at FDR cutoff
+    ax.axvline(x=fdr_cutoff, color='red', linestyle='--', 
+               label=f'FDR cutoff: {fdr_cutoff}')
+    ax.legend()
+    
+    if include_stats:
+        avg_fdr = data[STATISTICS_DEFS.Q_VALUE].mean()
+        median_fdr = data[STATISTICS_DEFS.Q_VALUE].median()
+        sig_count_fdr = sum(data[STATISTICS_DEFS.Q_VALUE] < fdr_cutoff)
+        sig_pct_fdr = 100 * sig_count_fdr / len(data)
+        stats_text = f"Mean: {avg_fdr:.4f}\nMedian: {median_fdr:.4f}\n"
+        stats_text += f"Significant: {sig_count_fdr}/{len(data)} ({sig_pct_fdr:.1f}%)"
+        ax.text(0.05, 0.95, stats_text,
+                transform=ax.transAxes,
+                verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))

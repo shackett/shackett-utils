@@ -320,7 +320,7 @@ def test_add_regression_results_significance_mask(minimal_adata):
         STATISTICS_DEFS.Q_VALUE: [0.02, 0.08, 0.04, 0.05]
     })
     
-    # Test with fdr_cutoff
+    # Test with fdr_cutoff and q-values
     adata = minimal_adata.copy()
     adata_regression.add_regression_results_to_anndata(
         adata=adata,
@@ -347,9 +347,9 @@ def test_add_regression_results_significance_mask(minimal_adata):
         inplace=True
     )
     
-    # Check significance masks use p-values when q-values not available
-    assert adata.var.loc['gene_0', 'sig_batch']  # p-value 0.01 < 0.05
-    assert not adata.var.loc['gene_1', 'sig_batch']  # p-value 0.06 > 0.05
+    # Check no significance masks are created when q-values are not available
+    assert 'sig_batch' not in adata.var.columns
+    assert 'sig_condition' not in adata.var.columns
     
     # Test without fdr_cutoff
     adata = minimal_adata.copy()
@@ -359,6 +359,6 @@ def test_add_regression_results_significance_mask(minimal_adata):
         inplace=True
     )
     
-    # Check no significance masks are present
+    # Check no significance masks are present when no fdr_cutoff provided
     assert 'sig_batch' not in adata.var.columns
     assert 'sig_condition' not in adata.var.columns 
