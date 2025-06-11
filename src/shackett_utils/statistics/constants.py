@@ -79,9 +79,9 @@ MULTITEST_GROUPING_VARS = [
 ]
 
 FDR_METHODS_DEFS = SimpleNamespace(
-    FDR_BH = "fdr_bh"
+    BH = "fdr_bh"
 )
 
 FDR_METHODS = [
-    FDR_METHODS_DEFS.FDR_BH,
+    FDR_METHODS_DEFS.BH,
 ]

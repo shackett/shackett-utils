@@ -3,8 +3,6 @@ Global pytest configuration and fixtures.
 """
 # Configure warnings before any imports
 import warnings
-from shackett_utils.config import configure_warnings
-configure_warnings()
 
 # Now import other dependencies
 import pytest
@@ -71,23 +69,23 @@ def simple_mdata():
     # Generate structured data for first modality
     np.random.seed(42)
     # Create two clear patterns in the data
-    pattern1 = np.sin(np.linspace(0, 4*np.pi, n_obs))[:, np.newaxis]
-    pattern2 = np.cos(np.linspace(0, 4*np.pi, n_obs))[:, np.newaxis]
+    pattern1 = 3.0 * np.sin(np.linspace(0, 4*np.pi, n_obs))[:, np.newaxis]  # Amplify RNA signal
+    pattern2 = 3.0 * np.cos(np.linspace(0, 4*np.pi, n_obs))[:, np.newaxis]  # Amplify RNA signal
     
     # Create RNA data with two main patterns
     X1 = np.zeros((n_obs, n_vars1))
     X1[:, :n_vars1//2] = pattern1  # First half of genes follow pattern1
     X1[:, n_vars1//2:] = pattern2  # Second half follow pattern2
-    X1 += np.random.normal(0, 0.1, (n_obs, n_vars1))  # Add noise
+    X1 += np.random.normal(0, 0.2, (n_obs, n_vars1))  # Moderate noise
     
-    # Create ATAC data with similar structure
-    pattern3 = np.sin(np.linspace(0, 2*np.pi, n_obs))[:, np.newaxis]
-    pattern4 = np.cos(np.linspace(0, 2*np.pi, n_obs))[:, np.newaxis]
+    # Create ATAC data with similar structure but stronger signal
+    pattern3 = 5.0 * np.sin(np.linspace(0, 2*np.pi, n_obs))[:, np.newaxis]  # Strong ATAC signal
+    pattern4 = 5.0 * np.cos(np.linspace(0, 2*np.pi, n_obs))[:, np.newaxis]  # Strong ATAC signal
     
     X2 = np.zeros((n_obs, n_vars2))
     X2[:, :n_vars2//2] = pattern3
     X2[:, n_vars2//2:] = pattern4
-    X2 += np.random.normal(0, 0.1, (n_obs, n_vars2))
+    X2 += np.random.normal(0, 0.5, (n_obs, n_vars2))  # More noise but still dominated by signal
     
     # Create sample metadata
     obs = pd.DataFrame(
@@ -118,13 +116,19 @@ def simple_mdata():
     # Create MuData object
     mdata = md.MuData({'rna': rna, 'atac': atac})
     
-    return mdata
-
-def pytest_configure(config):
-    """Configure pytest - runs before test collection.
+    # Add fake MOFA factors with known relationships to metadata
+    n_factors = 4
+    X_mofa = np.zeros((n_obs, n_factors))
+    # Factor 1: Strongly related to group
+    X_mofa[:, 0] = (obs['group'] == 'A').astype(float) + np.random.normal(0, 0.1, n_obs)
+    # Factor 2: Strongly related to continuous_var
+    X_mofa[:, 1] = 2.0 * obs['continuous_var'] + np.random.normal(0, 0.1, n_obs)
+    # Factor 3: Mix of group and continuous_var
+    X_mofa[:, 2] = (obs['group'] == 'A').astype(float) + 0.5 * obs['continuous_var'] + np.random.normal(0, 0.1, n_obs)
+    # Factor 4: Random noise
+    X_mofa[:, 3] = np.random.normal(0, 1, n_obs)
     
-    Args:
-        config: The pytest config object passed automatically by pytest
-    """
-    # Use the centralized warning configuration
-    configure_warnings() 
+    # Add to mdata.obsm
+    mdata.obsm['X_mofa'] = X_mofa
+    
+    return mdata

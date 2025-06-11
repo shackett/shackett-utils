@@ -11,6 +11,7 @@ import io
 import os
 import sys
 from typing import Dict, List, Tuple, Optional, Iterable, Any, Union
+import json
 
 import anndata as ad
 import matplotlib.pyplot as plt
@@ -23,9 +24,12 @@ import seaborn as sns
 import statsmodels.formula.api as smf
 from statsmodels.stats.multitest import multipletests
 
-from shackett_utils.genomics.mudata_utils import create_minimal_mudata
-from shackett_utils.statistics.constants import STATISTICS_DEFS, FDR_METHODS_DEFS
+from shackett_utils.genomics.mdata_utils import create_minimal_mudata
+from shackett_utils.statistics import multi_model_fitting
+from shackett_utils.statistics.constants import STATISTICS_DEFS, FDR_METHODS_DEFS, TIDY_DEFS
+from shackett_utils.genomics.constants import MOFA_DEFS, FACTOR_REGRESSIONS_KEY, FACTOR_NAME_PATTERN, VARIANCE_METRICS_DEFS, K_SELECTION_CRITERIA, AUTO_K_SELECTION_CRITERIA
 from shackett_utils.utils.decorators import suppress_stdout
+from shackett_utils.utils.time import get_timestamp
 
 # Configure MuData to use new update behavior
 md.set_options(pull_on_update=False)
@@ -41,6 +45,15 @@ def _mofa(
     """
     Helper function to run MOFA with suppressed output.
     Just wraps muon.tl.mofa to suppress its verbose output.
+    
+    Parameters
+    ----------
+    mdata : md.MuData
+        Multi-modal data object to be updated in-place
+    *args
+        Additional positional arguments passed to muon.tl.mofa
+    **kwargs
+        Additional keyword arguments passed to muon.tl.mofa
     """
     muon.tl.mofa(mdata, *args, **kwargs)
 
@@ -54,7 +67,7 @@ def run_mofa_factor_scan(
     overwrite: bool = False,
 ) -> Dict[int, Dict[str, str]]:
     """
-    Run MOFA with different numbers of factors and save results.
+    Run MOFA with different numbers of factors and save variance metrics summaries.
     
     Parameters
     ----------
@@ -69,14 +82,14 @@ def run_mofa_factor_scan(
     seed : int, optional
         Random seed for reproducibility, by default 42
     models_dir : str, optional
-        Directory to save models, by default "mofa_models"
+        Directory to save summaries, by default "mofa_models"
     overwrite : bool, optional
         Whether to overwrite existing results, by default False
         
     Returns
     -------
     Dict[int, Dict[str, str]]
-        Dictionary mapping number of factors to file paths
+        Dictionary mapping number of factors to summary file paths
     """
     # Create output directory if it doesn't exist
     os.makedirs(models_dir, exist_ok=True)
@@ -84,35 +97,46 @@ def run_mofa_factor_scan(
     # Store results
     results = {}
     
-    # Create a copy of the data to avoid modifying the original
-    clean_mdata = mdata.copy()
-    
     for n_factors in factor_range:
         # Set up file paths
-        model_file = os.path.join(models_dir, f"model_{n_factors}.h5")
+        temp_model_file = os.path.join(models_dir, f"temp_model_{n_factors}.h5")
+        summary_file = os.path.join(models_dir, f"summary_{n_factors}.json")
         
-        # Skip if files exist and not overwriting
-        if not overwrite and os.path.exists(model_file):
-            results[n_factors] = {"model_file": model_file}
+        # Skip if summary exists and not overwriting
+        if not overwrite and os.path.exists(summary_file):
+            results[n_factors] = {"summary_file": summary_file}
             continue
         
         try:
-            # Run MOFA
+            # Create a minimal copy of the data for this iteration
+            model_data = create_minimal_mudata(
+                mdata,
+                include_layers=[use_layer] if use_layer else None
+            )
+            
+            # Run MOFA in-place
             _mofa(
-                clean_mdata,
+                model_data,
                 n_factors=n_factors,
                 use_layer=use_layer,
                 use_var=use_var,
-                outfile=model_file,
+                outfile=temp_model_file,
                 seed=seed
             )
             
-            # Store file paths
-            results[n_factors] = {"model_file": model_file}
-            print(f"[{_get_timestamp()}] Saved results for {n_factors} factors.")
+            # Calculate metrics directly from the fitted model
+            metrics = _calculate_mofa_variance_metrics(model_data, use_layer=use_layer)
+            
+            # Save metrics to JSON
+            with open(summary_file, 'w') as f:
+                json.dump(metrics, f)
+            
+            # Store summary file path
+            results[n_factors] = {"summary_file": summary_file}
+            print(f"[{get_timestamp()}] Saved metrics for {n_factors} factors.")
                 
         except Exception as e:
-            print(f"[{_get_timestamp()}] Error with {n_factors} factors: {str(e)}")
+            print(f"[{get_timestamp()}] Error with {n_factors} factors: {str(e)}")
             import traceback
             traceback.print_exc()
     
@@ -136,7 +160,11 @@ def _calculate_mofa_variance_metrics(
     Returns
     -------
     Dict[str, Any]
-        Dictionary with variance metrics
+        Dictionary with variance metrics:
+        - total_variance: Total variance explained across all modalities
+        - modality_variance: Dict mapping modality names to their variance explained
+        - raw_tss: Dict mapping modality names to their total sum of squares
+        - raw_ess: Dict mapping modality names to their explained sum of squares
     """
     metrics = {
         "total_variance": 0.0,
@@ -145,8 +173,8 @@ def _calculate_mofa_variance_metrics(
         "raw_ess": {}
     }
     
-    factors = mdata.obsm["X_mofa"]
-    loadings = mdata.varm["LFs"]
+    factors = mdata.obsm[MOFA_DEFS.X_MOFA]
+    loadings = mdata.varm[MOFA_DEFS.LFS]
     
     # Calculate TSS and ESS for each modality
     total_ss = {}
@@ -183,29 +211,29 @@ def _calculate_mofa_variance_metrics(
     total_variance = (total_ess / total_tss) * 100
     
     return {
-        "total_variance": total_variance,
-        "modality_variance": modality_variance,
-        "raw_tss": total_ss,
-        "raw_ess": ess
+        VARIANCE_METRICS_DEFS.TOTAL_VARIANCE: total_variance,
+        VARIANCE_METRICS_DEFS.MODALITY_VARIANCE: modality_variance,
+        VARIANCE_METRICS_DEFS.RAW_TSS: total_ss,
+        VARIANCE_METRICS_DEFS.RAW_ESS: ess
     }
 
 
 def calculate_variance_metrics(
     factor_results: Dict[int, Dict[str, str]],
-    mdata: md.MuData,
-    use_layer: Optional[str] = None,
+    mdata: Optional[md.MuData] = None,  # Made optional since we don't need it anymore
+    use_layer: Optional[str] = None,  # Kept for backwards compatibility
 ) -> Dict[int, Dict[str, float]]:
     """
-    Calculate variance metrics for each factor model.
+    Load variance metrics for each factor model from JSON summaries.
     
     Parameters
     ----------
     factor_results : Dict[int, Dict[str, str]]
-        Dictionary mapping number of factors to file paths
-    mdata : md.MuData
-        Multi-modal data object
+        Dictionary mapping number of factors to summary file paths
+    mdata : Optional[md.MuData], optional
+        Not used anymore, kept for backwards compatibility
     use_layer : Optional[str], optional
-        Layer to use for variance calculation, by default None
+        Not used anymore, kept for backwards compatibility
         
     Returns
     -------
@@ -216,34 +244,30 @@ def calculate_variance_metrics(
     
     for n_factors, paths in factor_results.items():
         try:
-            # Load model into a fresh copy of the data
-            model_file = paths["model_file"]
-            model_data = mdata.copy()
-            _mofa(model_data, outfile=model_file)
-            
-            # Calculate metrics
-            factor_metrics = _calculate_mofa_variance_metrics(model_data, use_layer=use_layer)
-            metrics[n_factors] = factor_metrics
-            print(f"Calculated metrics for {n_factors} factors. Total variance: {factor_metrics['total_variance']:.2f}%")
+            # Load metrics from JSON
+            summary_file = paths["summary_file"]
+            with open(summary_file, 'r') as f:
+                metrics[n_factors] = json.load(f)
+            print(f"Loaded metrics for {n_factors} factors. Total variance: {metrics[n_factors]['total_variance']:.2f}%")
             
         except Exception as e:
-            print(f"Error calculating metrics for {n_factors} factors: {str(e)}")
+            print(f"Error loading metrics for {n_factors} factors: {str(e)}")
             import traceback
             traceback.print_exc()
             # Initialize with empty metrics to avoid KeyError
             metrics[n_factors] = {
-                "total_variance": 0.0,
-                "modality_variance": {mod: 0.0 for mod in mdata.mod.keys()},
-                "raw_tss": {mod: 0.0 for mod in mdata.mod.keys()},
-                "raw_ess": {mod: 0.0 for mod in mdata.mod.keys()}
+                VARIANCE_METRICS_DEFS.TOTAL_VARIANCE: 0.0,
+                VARIANCE_METRICS_DEFS.MODALITY_VARIANCE: {mod: 0.0 for mod in (mdata.mod.keys() if mdata else [])},
+                VARIANCE_METRICS_DEFS.RAW_TSS: {},
+                VARIANCE_METRICS_DEFS.RAW_ESS: {}
             }
     
     return metrics
 
 
-def determine_optimal_factors(
+def _determine_optimal_factors(
     metrics: Dict[int, Dict[str, Any]], 
-    criterion: str = "elbow", 
+    criterion: str = K_SELECTION_CRITERIA.ELBOW, 
     threshold: float = 0.01
 ) -> Optional[int]:
     """
@@ -268,19 +292,19 @@ def determine_optimal_factors(
     Examples
     --------
     >>> # Determine optimal factors using different criteria
-    >>> optimal_elbow = determine_optimal_factors(metrics, criterion='elbow')
-    >>> optimal_threshold = determine_optimal_factors(metrics, criterion='threshold', threshold=0.01)
-    >>> optimal_balanced = determine_optimal_factors(metrics, criterion='balanced')
+    >>> optimal_elbow = _determine_optimal_factors(metrics, criterion='elbow')
+    >>> optimal_threshold = _determine_optimal_factors(metrics, criterion='threshold', threshold=0.01)
+    >>> optimal_balanced = _determine_optimal_factors(metrics, criterion='balanced')
     >>> print(f"Optimal factors: elbow={optimal_elbow}, threshold={optimal_threshold}, balanced={optimal_balanced}")
     """
     # Extract factors and variance values
-    factors = sorted([k for k in metrics.keys() if metrics[k]["total_variance"] is not None])
+    factors = sorted([k for k in metrics.keys() if metrics[k][VARIANCE_METRICS_DEFS.TOTAL_VARIANCE] is not None])
     
     if not factors:
         print("No valid variance metrics available")
         return None
         
-    variance = [metrics[k]["total_variance"] for k in factors]
+    variance = [metrics[k][VARIANCE_METRICS_DEFS.TOTAL_VARIANCE] for k in factors]
 
     if len(factors) <= 1:
         return factors[0] if factors else None
@@ -288,17 +312,17 @@ def determine_optimal_factors(
     # Calculate marginal improvements
     diffs = np.diff(variance)
 
-    if criterion == "elbow":
+    if criterion == K_SELECTION_CRITERIA.ELBOW:
         return _determine_optimal_elbow(factors, variance, diffs)
-    elif criterion == "threshold":
+    elif criterion == K_SELECTION_CRITERIA.THRESHOLD:
         return _determine_optimal_threshold(factors, diffs, threshold)
-    elif criterion == "balanced":
+    elif criterion == K_SELECTION_CRITERIA.BALANCED:
         return _determine_optimal_balanced(factors, variance)
     else:
-        raise ValueError(f"Unknown criterion: {criterion}. Use 'elbow', 'threshold', or 'balanced'.")
+        raise ValueError(f"Unknown criterion: {criterion}. Use {', '.join(AUTO_K_SELECTION_CRITERIA)}.")
 
 
-def visualize_variance_explained(
+def _visualize_variance_explained(
     metrics: Dict[int, Dict[str, Any]],
     optimal_factors: Optional[Dict[str, int]] = None,
     user_factors: Optional[int] = None,
@@ -327,7 +351,7 @@ def visualize_variance_explained(
         Created figure
     """
     # Extract factors and variance values
-    factors = sorted([k for k in metrics.keys() if metrics[k]["total_variance"] is not None])
+    factors = sorted([k for k in metrics.keys() if metrics[k][VARIANCE_METRICS_DEFS.TOTAL_VARIANCE] is not None])
     
     if not factors:
         print("No valid variance metrics available")
@@ -336,7 +360,7 @@ def visualize_variance_explained(
                  horizontalalignment="center", verticalalignment="center")
         return fig
         
-    variance = [metrics[k]["total_variance"] for k in factors]
+    variance = [metrics[k][VARIANCE_METRICS_DEFS.TOTAL_VARIANCE] for k in factors]
     
     # Create figure
     fig = plt.figure(figsize=figsize)
@@ -345,7 +369,7 @@ def visualize_variance_explained(
     plt.plot(factors, variance, "o-", linewidth=2, color="blue", markersize=8)
     
     # Highlight optimal factors if provided
-    colors = {"elbow": "red", "threshold": "green", "balanced": "purple"}
+    colors = {K_SELECTION_CRITERIA.ELBOW: "red", K_SELECTION_CRITERIA.THRESHOLD: "green", K_SELECTION_CRITERIA.BALANCED: "purple"}
     
     if optimal_factors:
         for method, n_factors in optimal_factors.items():
@@ -401,234 +425,125 @@ def visualize_variance_explained(
     
     return fig
 
-
-def visualize_marginal_improvement(
-    metrics: Dict[int, Dict[str, Any]],
-    optimal_factors: Optional[Dict[str, int]] = None,
-    user_factors: Optional[int] = None,
-    figsize: Tuple[int, int] = (12, 8),
-    save_path: Optional[str] = None,
-) -> plt.Figure:
+def plot_mofa_factor_histograms(
+    mdata,
+    factors: Optional[Union[int, List[int]]] = None,
+    n_bins: int = 30,
+    n_cols: int = 3,
+    figsize: Tuple[float, float] = None,
+    kde: bool = True,
+    color: str = 'steelblue',
+    return_fig: bool = False
+):
     """
-    Create a plot of marginal variance improvement by number of factors.
+    Plot histograms of MOFA factor values.
     
     Parameters
     ----------
-    metrics : Dict[int, Dict[str, Any]]
-        Dictionary with variance metrics for each factor value
-    optimal_factors : Optional[Dict[str, int]]
-        Dictionary mapping method names to optimal factor values, by default None
-    user_factors : Optional[int]
-        User-specified number of factors to highlight, by default None
-    figsize : Tuple[int, int]
-        Figure size, by default (12, 8)
-    save_path : Optional[str]
-        Path to save the figure, by default None
-        
+    mdata : MuData
+        MuData object with MOFA results
+    factors : int or list of ints, optional
+        Factors to plot. If None, all factors are plotted.
+    n_bins : int, default=30
+        Number of bins for histograms
+    n_cols : int, default=3
+        Number of columns in the grid plot
+    figsize : tuple, optional
+        Figure size
+    kde : bool, default=True
+        Whether to overlay a kernel density estimate
+    color : str, default='steelblue'
+        Color for the histogram bars
+    return_fig : bool, default=False
+        Whether to return the figure object
+    
     Returns
     -------
-    plt.Figure
-        Created figure
-        
-    Examples
-    --------
-    >>> # Visualize marginal improvement with optimal factors highlighted
-    >>> fig = visualize_marginal_improvement(metrics, optimal_factors, user_factors=15)
-    >>> plt.show()
+    matplotlib.figure.Figure, optional
+        Figure object, if return_fig is True
     """
-    # Extract factors and variance values
-    factors = sorted([k for k in metrics.keys() if metrics[k]["total_variance"] is not None])
+    # Extract MOFA factors
+    X_mofa = mdata.obsm[MOFA_DEFS.X_MOFA]
     
-    if not factors:
-        print("No valid variance metrics available")
-        fig = plt.figure(figsize=figsize)
-        plt.text(0.5, 0.5, "No valid variance metrics available", 
-                 horizontalalignment="center", verticalalignment="center")
-        return fig
+    # Get number of factors
+    n_factors = X_mofa.shape[1]
     
-    if len(factors) <= 1:
-        print("Need at least two factor values to calculate marginal improvement")
-        fig = plt.figure(figsize=figsize)
-        plt.text(0.5, 0.5, "Need at least two factor values to calculate marginal improvement", 
-                 horizontalalignment="center", verticalalignment="center")
-        return fig
-        
-    variance = [metrics[k]["total_variance"] for k in factors]
+    # Select factors to plot
+    if factors is None:
+        factors = list(range(n_factors))
+    elif isinstance(factors, int):
+        factors = [factors]
     
-    # Calculate marginal improvements
-    diffs = np.diff(variance)
-    diffs = np.append(diffs, diffs[-1])  # Pad to match length
-    
-    # Create figure
-    fig = plt.figure(figsize=figsize)
-    
-    # Plot bars for all factors
-    bars = plt.bar(factors, diffs, color="green", alpha=0.6, width=min(2, (factors[-1] - factors[0]) / len(factors) / 2))
-    
-    # Calculate mean improvement
-    mean_improvement = np.mean(diffs)
-    half_mean = mean_improvement / 2
-    
-    # Add threshold line
-    plt.axhline(
-        y=half_mean, 
-        color="red", 
-        linestyle="--", 
-        label=f"Half of mean improvement ({half_mean:.4f})"
+    # Create a DataFrame with factor values
+    df = pd.DataFrame(
+        X_mofa[:, factors],
+        index=mdata.obs_names,
+        columns=[_factor_idx_to_name(i) for i in factors]
     )
     
-    # Highlight optimal factors if provided
-    colors = {"elbow": "red", "threshold": "green", "balanced": "purple"}
-    highlighted_factors = set()
+    # Calculate number of rows needed
+    n_factors_to_plot = len(factors)
+    n_rows = int(np.ceil(n_factors_to_plot / n_cols))
     
-    if optimal_factors:
-        for method, n_factors in optimal_factors.items():
-            if n_factors in factors and n_factors not in highlighted_factors:
-                highlighted_factors.add(n_factors)
-                color = colors.get(method, "gray")
-                idx = factors.index(n_factors)
-                plt.bar(
-                    [n_factors], 
-                    [diffs[idx]], 
-                    color=color, 
-                    alpha=1.0, 
-                    width=min(2, (factors[-1] - factors[0]) / len(factors) / 2),
-                    label=f"{method.capitalize()}: {n_factors} factors"
-                )
+    # Set up the figure
+    if figsize is None:
+        figsize = (4 * n_cols, 3 * n_rows)
     
-    # Highlight user-specified factors if provided
-    if user_factors and user_factors in factors and user_factors not in highlighted_factors:
-        idx = factors.index(user_factors)
-        plt.bar(
-            [user_factors], 
-            [diffs[idx]], 
-            color="orange", 
-            alpha=1.0, 
-            width=min(2, (factors[-1] - factors[0]) / len(factors) / 2),
-            label=f"User-specified: {user_factors} factors"
-        )
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
     
-    plt.xlabel("Number of factors")
-    plt.ylabel("Marginal variance explained")
-    plt.title("Marginal improvement per additional factor")
-    plt.grid(True, alpha=0.3)
-    plt.legend(loc="best")
+    # Handle single subplot case
+    if n_factors_to_plot == 1:
+        axes = np.array([axes])
+    
+    # Flatten axes for easy iteration
+    axes = axes.flatten()
+    
+    # Plot each factor
+    for i, factor_idx in enumerate(factors):
+        if i < len(axes):
+            ax = axes[i]
+            factor_name = _factor_idx_to_name(factor_idx)
+            
+            # Get factor values
+            factor_values = df[factor_name]
+            
+            # Plot histogram
+            sns.histplot(
+                factor_values,
+                bins=n_bins,
+                kde=kde,
+                color=color,
+                ax=ax
+            )
+            
+            # Set labels and title
+            ax.set_xlabel("Factor Value")
+            ax.set_ylabel("Frequency")
+            ax.set_title(f"Distribution of {factor_name}")
+            
+            # Add vertical line at mean
+            mean_val = factor_values.mean()
+            ax.axvline(mean_val, color='red', linestyle='--', 
+                       label=f'Mean: {mean_val:.2f}')
+            
+            # Add vertical line at median
+            median_val = factor_values.median()
+            ax.axvline(median_val, color='green', linestyle=':', 
+                       label=f'Median: {median_val:.2f}')
+            
+            # Add legend
+            ax.legend(fontsize='small')
+    
+    # Remove any unused subplots
+    for i in range(n_factors_to_plot, len(axes)):
+        fig.delaxes(axes[i])
+    
     plt.tight_layout()
     
-    # Save figure if requested
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
-    
-    return fig
-
-
-def visualize_modality_variance(
-    metrics: Dict[int, Dict[str, Any]],
-    optimal_factors: Optional[Dict[str, int]] = None,
-    user_factors: Optional[int] = None,
-    figsize: Tuple[int, int] = (12, 8),
-    save_path: Optional[str] = None,
-) -> plt.Figure:
-    """
-    Create a plot of variance explained per modality by number of factors.
-    
-    Parameters
-    ----------
-    metrics : Dict[int, Dict[str, Any]]
-        Dictionary with variance metrics for each factor value
-    optimal_factors : Optional[Dict[str, int]]
-        Dictionary mapping method names to optimal factor values, by default None
-    user_factors : Optional[int]
-        User-specified number of factors to highlight, by default None
-    figsize : Tuple[int, int]
-        Figure size, by default (12, 8)
-    save_path : Optional[str]
-        Path to save the figure, by default None
-        
-    Returns
-    -------
-    plt.Figure
-        Created figure
-    """
-    # Extract factors with valid metrics
-    factors = sorted([k for k in metrics.keys() if metrics[k]["total_variance"] is not None])
-    
-    if not factors:
-        print("No valid variance metrics available")
-        fig = plt.figure(figsize=figsize)
-        plt.text(0.5, 0.5, "No valid variance metrics available", 
-                 horizontalalignment="center", verticalalignment="center")
+    if return_fig:
         return fig
-    
-    # Gather modality data
-    mod_data = []
-    for n_factors in factors:
-        if metrics[n_factors]["modality_variance"]:
-            mod_vars = metrics[n_factors]["modality_variance"]
-            for mod, var in mod_vars.items():
-                if var is not None:
-                    mod_data.append({
-                        "factors": n_factors, 
-                        "modality": mod, 
-                        "variance": var
-                    })
-    
-    if not mod_data:
-        print("No modality-specific variance data available")
-        fig = plt.figure(figsize=figsize)
-        plt.text(0.5, 0.5, "No modality-specific variance data available", 
-                 horizontalalignment="center", verticalalignment="center")
-        return fig
-    
-    # Create DataFrame for plotting
-    mod_df = pd.DataFrame(mod_data)
-    
-    # Create figure
-    fig = plt.figure(figsize=figsize)
-    
-    # Plot modality-specific variances
-    sns.lineplot(data=mod_df, x="factors", y="variance", hue="modality", marker="o", markersize=8)
-    
-    # Highlight optimal factors if provided
-    colors = {"elbow": "red", "threshold": "green", "balanced": "purple"}
-    
-    if optimal_factors:
-        for method, n_factors in optimal_factors.items():
-            if n_factors in factors:
-                color = colors.get(method, "gray")
-                plt.axvline(
-                    x=n_factors, 
-                    color=color, 
-                    linestyle="--", 
-                    alpha=0.7,
-                    label=f"{method.capitalize()}: {n_factors} factors"
-                )
-    
-    # Highlight user-specified factors if provided
-    if user_factors and user_factors in factors:
-        plt.axvline(
-            x=user_factors, 
-            color="orange", 
-            linestyle="--", 
-            alpha=0.7,
-            label=f"User-specified: {user_factors} factors"
-        )
-    
-    plt.xlabel("Number of factors")
-    plt.ylabel("Variance explained (%)")
-    plt.title("Modality-specific variance explained")
-    
-    # Set y-axis to percentage scale
-    plt.ylim(0, min(100, mod_df["variance"].max() * 1.1))
-    
-    plt.legend(title="Modality", bbox_to_anchor=(1.05, 1), loc="upper left")
-    plt.tight_layout()
-    
-    # Save figure if requested
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
-    
-    return fig
+    else:
+        plt.show()
 
 
 def visualize_factor_scan_results(
@@ -667,9 +582,9 @@ def visualize_factor_scan_results(
     """
     # Calculate optimal factors using different criteria
     optimal_factors = {
-        "elbow": determine_optimal_factors(metrics, criterion="elbow"),
-        "threshold": determine_optimal_factors(metrics, criterion="threshold", threshold=0.01),
-        "balanced": determine_optimal_factors(metrics, criterion="balanced")
+        K_SELECTION_CRITERIA.ELBOW: _determine_optimal_factors(metrics, criterion=K_SELECTION_CRITERIA.ELBOW),
+        K_SELECTION_CRITERIA.THRESHOLD: _determine_optimal_factors(metrics, criterion=K_SELECTION_CRITERIA.THRESHOLD, threshold=0.01),
+        K_SELECTION_CRITERIA.BALANCED: _determine_optimal_factors(metrics, criterion=K_SELECTION_CRITERIA.BALANCED)
     }
     
     # Filter out None values
@@ -684,7 +599,7 @@ def visualize_factor_scan_results(
     
     # 1. Total variance explained plot
     save_path = os.path.join(save_dir, "total_variance.png") if save_dir else None
-    figures["total_variance"] = visualize_variance_explained(
+    figures["total_variance"] = _visualize_variance_explained(
         metrics, 
         optimal_factors, 
         user_factors, 
@@ -694,7 +609,7 @@ def visualize_factor_scan_results(
     
     # 2. Marginal improvement plot
     save_path = os.path.join(save_dir, "marginal_improvement.png") if save_dir else None
-    figures["marginal_improvement"] = visualize_marginal_improvement(
+    figures["marginal_improvement"] = _visualize_marginal_improvement(
         metrics, 
         optimal_factors, 
         user_factors, 
@@ -704,7 +619,7 @@ def visualize_factor_scan_results(
     
     # 3. Modality-specific variance plot
     save_path = os.path.join(save_dir, "modality_variance.png") if save_dir else None
-    figures["modality_variance"] = visualize_modality_variance(
+    figures["modality_variance"] = _visualize_modality_variance(
         metrics, 
         optimal_factors, 
         user_factors, 
@@ -725,10 +640,16 @@ def regress_factors_with_formula(
     mdata: MuData,
     formula: str,
     factors: Optional[Union[int, List[int]]] = None,
-    modality: str = "transcriptomics"  # Default modality
+    modality: Optional[str] = None,
+    n_jobs: int = 1,
+    fdr_control: bool = True,
+    fdr_method: str = FDR_METHODS_DEFS.BH,
+    model_class: Optional[str] = None,
+    **model_kwargs
 ) -> pd.DataFrame:
     """
     Regress factors against variables using a formula interface.
+    Uses the multi-model fitting approach for efficient parallel processing.
     
     Parameters
     ----------
@@ -736,22 +657,45 @@ def regress_factors_with_formula(
         Multi-modal data object containing factor analysis results.
     formula : str
         Formula for regression (e.g. "~ condition + batch").
+        Will be validated to ensure 'y ~ ...' format.
     factors : Optional[Union[int, List[int]]], optional
         Specific factors to analyze. If None, analyze all factors.
     modality : str, optional
-        Modality to analyze. Default is "transcriptomics".
+        Modality to analyze. Default of None will choose the first modality. This won't usually matter too much because we are only getting sample attributes for the regression; the acutal factors are still informed by all modalities. 
+    n_jobs : int, optional
+        Number of parallel jobs to run. Default is 1.
+    fdr_control : bool, optional
+        Whether to apply FDR correction. Default is True.
+    fdr_method : str, optional
+        Method for FDR correction. Default is "fdr_bh".
+    model_class : Optional[str], optional
+        Type of model to fit ('ols' or 'gam'). If None, will be detected from formula.
+    **model_kwargs
+        Additional arguments passed to model fitting.
         
     Returns
     -------
     pd.DataFrame
         DataFrame with regression results.
+        
+    Notes
+    -----
+    The function uses the multi-model fitting approach which:
+    1. Efficiently processes multiple factors in parallel
+    2. Handles missing values automatically
+    3. Provides proper FDR control across all tests
+    4. Supports both OLS and GAM models
     """
+    
     # Get factor data
+    if modality is None:
+        modality = mdata.mod_names[0]
+
     if modality not in mdata.mod:
         raise ValueError(f"Modality {modality} not found in MuData object")
     
     # Extract MOFA factors
-    X_mofa = mdata.obsm["X_mofa"]
+    X_mofa = mdata.obsm[MOFA_DEFS.X_MOFA]
     
     # Get number of factors
     n_factors = X_mofa.shape[1]
@@ -762,123 +706,28 @@ def regress_factors_with_formula(
     elif isinstance(factors, int):
         factors = [factors]
     
-    # Validate formula
-    if not formula.startswith('~'):
-        raise ValueError("Formula must start with '~'")
+    # Create feature matrix (factors are our features)
+    X_features = X_mofa[:, factors]
     
-    # Create data dictionary first, then create DataFrame all at once
-    data_dict = {}
+    # Create feature names
+    feature_names = [_factor_idx_to_name(factor_idx) for factor_idx in factors]
     
-    # Add observation variables from the specified modality
-    for col in mdata[modality].obs.columns:
-        data_dict[col] = mdata[modality].obs[col].values
+    # Get observation data from the specified modality
+    data = mdata[modality].obs.copy()
     
-    # Add factors to data dictionary
-    for factor_idx in factors:
-        data_dict[f"Factor_{factor_idx+1}"] = X_mofa[:, factor_idx]
+    # Run parallel regression using multi_model_fitting
+    results_df = multi_model_fitting.fit_parallel_models_formula(
+        X_features=X_features,
+        data=data,
+        feature_names=feature_names,
+        formula=formula,
+        model_class=model_class,
+        n_jobs=n_jobs,
+        fdr_control=fdr_control,
+        fdr_method=fdr_method,
+        **model_kwargs
+    ).rename(columns={STATISTICS_DEFS.FEATURE_NAME: MOFA_DEFS.FACTOR_NAME})
     
-    # Create DataFrame all at once to avoid fragmentation warnings
-    df = pd.DataFrame(data_dict, index=mdata.obs_names)
-    
-    # Initialize results list
-    results_list = []
-    
-    # Process each factor
-    for factor_idx in factors:
-        factor_name = f"Factor_{factor_idx+1}"
-        
-        # Build formula with current factor as dependent variable
-        full_formula = f"{factor_name} {formula}"
-        
-        try:
-            # Fit the model using statsmodels formula API
-            model = smf.ols(formula=full_formula, data=df)
-            result = model.fit()
-            
-            # Extract results for each term
-            # Skip the intercept (index 0)
-            for i, term in enumerate(result.params.index[1:], 1):
-                # Extract confidence intervals
-                conf_ints = result.conf_int()
-                conf_lower = conf_ints.iloc[i, 0]
-                conf_upper = conf_ints.iloc[i, 1]
-                
-                # Store result for this term
-                results_list.append({
-                    "factor_idx": factor_idx,  # Store numeric index
-                    "factor_name": factor_name,
-                    "term": term,
-                    "estimate": result.params[i],
-                    "std_err": result.bse[i],
-                    "statistic": result.tvalues[i],
-                    "p_value": result.pvalues[i],
-                    "conf_int_lower": conf_lower,
-                    "conf_int_upper": conf_upper,
-                    "nobs": result.nobs,
-                    "rsquared": result.rsquared,
-                    "rsquared_adj": result.rsquared_adj
-                })
-                
-        except Exception as e:
-            print(f"Error processing factor {factor_name}: {str(e)}")
-    
-    # Handle empty results
-    if not results_list:
-        print("No regression results were generated. Check your data and formula.")
-        return pd.DataFrame()
-    
-    # Convert to DataFrame
-    results_df = pd.DataFrame(results_list)
-    
-    # Add FDR correction (Benjamini-Hochberg)
-    if not results_df.empty and "p_value" in results_df.columns:
-        # Group by term and calculate FDR-corrected p-values
-        terms = results_df["term"].unique()
-        q_values_list = []
-        significant_list = []
-        
-        # Store indices for each term to use in assignment
-        term_indices = {}
-        
-        for term in terms:
-            mask = results_df["term"] == term
-            # Store indices for this term
-            term_indices[term] = results_df[mask].index
-            p_values = results_df.loc[mask, "p_value"].values
-            
-            if len(p_values) > 0:
-                try:
-                    # Apply multiple testing correction
-                    reject, q_values, _, _ = multipletests(
-                        p_values, method="fdr_bh"
-                    )
-                    
-                    # Store results for later assignment
-                    for idx, q_value, reject_val in zip(term_indices[term], q_values, reject):
-                        q_values_list.append((idx, q_value))
-                        significant_list.append((idx, reject_val))
-                        
-                except Exception as e:
-                    print(f"Error applying multiple testing correction for {term}: {str(e)}")
-                    # Create NaN/False entries for this term
-                    for idx in term_indices[term]:
-                        q_values_list.append((idx, np.nan))
-                        significant_list.append((idx, False))
-        
-        # Add columns efficiently using values
-        if q_values_list:
-            # Create new columns
-            results_df["q_value"] = np.nan
-            results_df["significant"] = False
-            
-            # Assign values
-            for idx, q_value in q_values_list:
-                results_df.at[idx, "q_value"] = q_value
-                
-            for idx, sig_value in significant_list:
-                results_df.at[idx, "significant"] = sig_value
-    
-    print(f"Completed regression analysis for {len(results_df)} factor-term pairs.")
     return results_df
 
 
@@ -909,7 +758,7 @@ def summarize_factor_regression(
         return pd.DataFrame()
     
     # Use q_value if available, otherwise use p_value
-    p_col = "q_value" if "q_value" in regression_results.columns else "p_value"
+    p_col = TIDY_DEFS.Q_VALUE if TIDY_DEFS.Q_VALUE in regression_results.columns else TIDY_DEFS.P_VALUE
     
     # Create significance mask
     results_df = regression_results.copy()
@@ -923,17 +772,18 @@ def summarize_factor_regression(
         return pd.DataFrame()
     
     # Select relevant columns
+    # TODO - code smell
     summary_cols = [
-        'factor_name', 'term', 'estimate', 'std_err',
-        'p_value', 'q_value' if 'q_value' in results_df.columns else 'p_value',
-        'rsquared', 'nobs'
+        MOFA_DEFS.FACTOR_NAME, TIDY_DEFS.TERM, TIDY_DEFS.ESTIMATE, TIDY_DEFS.STD_ERROR,
+        TIDY_DEFS.P_VALUE, TIDY_DEFS.Q_VALUE if TIDY_DEFS.Q_VALUE in results_df.columns else TIDY_DEFS.P_VALUE,
+        TIDY_DEFS.RSQUARED, TIDY_DEFS.NOBS
     ]
     
     # Check for excluded columns
     available_cols = []
     for col in summary_cols:
-        if col in sig_results.columns or (col == 'q_value' and 'q_value' not in sig_results.columns):
-            if col != 'q_value' or 'q_value' in sig_results.columns:
+        if col in sig_results.columns or (col == TIDY_DEFS.Q_VALUE and TIDY_DEFS.Q_VALUE not in sig_results.columns):
+            if col != TIDY_DEFS.Q_VALUE or TIDY_DEFS.Q_VALUE in sig_results.columns:
                 available_cols.append(col)
     
     summary_df = sig_results[available_cols].copy()
@@ -941,27 +791,27 @@ def summarize_factor_regression(
     # Group by factor or term depending on preference
     # Always sort by p-value and q-value (if available), then by factor or term
     sort_cols = []
-    if 'p_value' in summary_df.columns:
-        sort_cols.append('p_value')
-    if 'q_value' in summary_df.columns:
-        sort_cols.append('q_value')
+    if TIDY_DEFS.P_VALUE in summary_df.columns:
+        sort_cols.append(TIDY_DEFS.P_VALUE)
+    if TIDY_DEFS.Q_VALUE in summary_df.columns:
+        sort_cols.append(TIDY_DEFS.Q_VALUE)
     # Add grouping column
     if group_by_factor:
-        sort_cols = ['factor_name'] + sort_cols
+        sort_cols = [MOFA_DEFS.FACTOR_NAME] + sort_cols
     else:
-        sort_cols = ['term'] + sort_cols
+        sort_cols = [TIDY_DEFS.TERM] + sort_cols
     summary_df = summary_df.sort_values(sort_cols, ascending=True)
 
     # Format numeric columns (after sorting)
-    for col in ['estimate', 'std_err']:
+    for col in [TIDY_DEFS.ESTIMATE, TIDY_DEFS.STD_ERROR]:
         if col in summary_df.columns:
             summary_df[col] = summary_df[col].map('{:.3f}'.format)
 
-    for col in ['p_value', 'q_value']:
+    for col in [TIDY_DEFS.P_VALUE, TIDY_DEFS.Q_VALUE]:
         if col in summary_df.columns:
             summary_df[col] = summary_df[col].map('{:.2e}'.format)
 
-    for col in ['rsquared']:
+    for col in [TIDY_DEFS.RSQUARED]:
         if col in summary_df.columns:
             summary_df[col] = summary_df[col].map('{:.3f}'.format)
     
@@ -970,7 +820,7 @@ def summarize_factor_regression(
 
 def factor_term_scatterplot(
     mdata: MuData,
-    factor: int,
+    factor: Union[int, str],
     formula_name: str,
     term: Optional[str] = None
 ) -> None:
@@ -981,10 +831,10 @@ def factor_term_scatterplot(
     ----------
     mdata : MuData
         MuData object containing MOFA results and sample attributes.
-    factor : int
-        Factor index or name to plot.
+    factor : int or str
+        Factor index (int) [starting from 0] or name (str) [starting from 1] to plot.
     formula_name : str
-        Name of the regression formula (used as key in mdata.uns).
+        Name of the regression formula used in the analysis.
     term : str or None, optional
         Name of the sample attribute to plot on the x-axis. If None, uses formula_name.
 
@@ -995,19 +845,15 @@ def factor_term_scatterplot(
     # If term is None, use formula_name as the term
     if term is None:
         term = formula_name
+    
     df = _factor_term_sample_attrs(mdata, factor, formula_name, term)
-    # Get the actual factor name for labeling
-    factor_regression_key = FACTOR_REGRESSION_STR.format(formula_name)
-    factor_term_summaries = mdata.uns[factor_regression_key]
-    if (factor_term_summaries["factor_name"] == factor).any():
-        factor_name = factor
-    elif (factor_term_summaries["factor_idx"] == factor).any():
-        factor_name = factor_term_summaries[factor_term_summaries["factor_idx"] == factor]["factor_name"].iloc[0]
+    
+    # Get the factor name
+    if isinstance(factor, int):
+        factor_name = _factor_idx_to_name(factor)
     else:
-        factor_name = str(factor)
-    # Plot the data with regression line
-    import matplotlib.pyplot as plt
-    import seaborn as sns
+        factor_name = factor
+    
     plt.figure(figsize=(7, 5))
     sns.regplot(data=df, x="sample_attribute", y="factor_values", scatter_kws={'alpha':0.7})
     plt.xlabel(term)
@@ -1021,10 +867,9 @@ def factor_term_scatterplot(
     plt.tight_layout()
     plt.show()
 
-
 def _factor_term_sample_attrs(
     mdata: MuData,
-    factor: int,
+    factor: Union[int, str],
     formula_name: str,
     term: str
 ) -> pd.DataFrame:
@@ -1035,10 +880,10 @@ def _factor_term_sample_attrs(
     ----------
     mdata : MuData
         MuData object containing MOFA results and sample attributes.
-    factor : int
-        Factor index or name to extract.
+    factor : int or str
+        Factor index (int) [starting from 0] or name (str) [starting from 1] to extract.
     formula_name : str
-        Name of the regression formula (used as key in mdata.uns).
+        Name of the regression formula used in the analysis.
     term : str
         Name of the sample attribute to extract.
 
@@ -1047,58 +892,51 @@ def _factor_term_sample_attrs(
     pd.DataFrame
         DataFrame with columns 'sample_attribute' and 'factor_values'.
     """
-    factor_regression_key = FACTOR_REGRESSION_STR.format(formula_name)
-    # validate that the key exists
-    if factor_regression_key not in mdata.uns:
-        raise KeyError(f"No regression results found in mdata.uns under key '{factor_regression_key}'")
+    # Check if regression results exist
+    if FACTOR_REGRESSIONS_KEY not in mdata.uns:
+        raise KeyError(f"No regression results found in mdata.uns under key '{FACTOR_REGRESSIONS_KEY}'")
 
-    factor_term_summaries = mdata.uns[factor_regression_key]
-    # see if factor_name exists or factor_idx was provided in the factor arg
-    if (factor_term_summaries["factor_name"] == factor).any():
-        factor_df = factor_term_summaries[factor_term_summaries["factor_name"] == factor]
-    elif (factor_term_summaries["factor_idx"] == factor).any():
-        factor_df = factor_term_summaries[factor_term_summaries["factor_idx"] == factor]
+    # Get regression results
+    factor_regressions = mdata.uns[FACTOR_REGRESSIONS_KEY]
+    
+    # Filter by formula name
+    formula_results = factor_regressions[factor_regressions[MOFA_DEFS.FORMULA_NAME] == formula_name]
+    if len(formula_results) == 0:
+        raise ValueError(f"No regression results found for formula '{formula_name}'")
+    
+    # Convert factor to name if it's an index
+    if isinstance(factor, int):
+        factor_name = _factor_idx_to_name(factor)
     else:
-        raise ValueError(f"Factor '{factor}' did not match the factor_name or factor_idx values factor_term_summaries")
+        factor_name = factor
 
-    factor_idx = factor_df["factor_idx"].iloc[0]
+    # Check if factor exists in results for this formula
+    if not (formula_results[MOFA_DEFS.FACTOR_NAME] == factor_name).any():
+        raise ValueError(f"Factor '{factor_name}' not found in regression results for formula '{formula_name}'")
 
-    # lookup factor values from obsm
-    factor_values = mdata.obsm["X_mofa"][:, factor_idx]
+    # Get factor index from name
+    factor_idx = _factor_name_to_idx(factor_name)
 
-    # pull out the relevant sample attribute
+    # Get factor values from obsm
+    factor_values = mdata.obsm[MOFA_DEFS.X_MOFA][:, factor_idx]
+
+    # Get sample attribute from first modality (they should all be the same)
     sample_attribute = mdata[mdata.mod_names[0]].obs
 
-    # check for the term in the sample attribute
+    # Check for the term in the sample attribute
     if term in sample_attribute.columns:
         sample_attribute = sample_attribute[term]
     else:
         raise ValueError(f"Term '{term}' not found in sample attribute")
 
-    df = pd.DataFrame({"sample_attribute": sample_attribute, "factor_values": factor_values})
+    df = pd.DataFrame({
+        "sample_attribute": sample_attribute,
+        "factor_values": factor_values
+    })
 
     return df
 
-
 # Additional utility functions with underscore prefix
-
-def _get_timestamp() -> str:
-    """Get current timestamp formatted as string."""
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _calculate_per_factor_variance(variance_data: Dict[str, np.ndarray]) -> Optional[np.ndarray]:
-    """Calculate per-factor variance summed across modalities."""
-    per_factor_variance = None
-    
-    for mod, var_array in variance_data.items():
-        if per_factor_variance is None:
-            per_factor_variance = var_array.copy()
-        else:
-            per_factor_variance += var_array
-            
-    return per_factor_variance
-
 
 def _determine_optimal_elbow(
     factors: List[int], 
@@ -1153,3 +991,243 @@ def _determine_optimal_balanced(
     best_idx = np.argmax(scores)
 
     return factors[best_idx]
+
+
+def _visualize_marginal_improvement(
+    metrics: Dict[int, Dict[str, Any]],
+    optimal_factors: Optional[Dict[str, int]] = None,
+    user_factors: Optional[int] = None,
+    figsize: Tuple[int, int] = (12, 8),
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Create a plot of marginal variance improvement by number of factors.
+    
+    Parameters
+    ----------
+    metrics : Dict[int, Dict[str, Any]]
+        Dictionary with variance metrics for each factor value
+    optimal_factors : Optional[Dict[str, int]]
+        Dictionary mapping method names to optimal factor values, by default None
+    user_factors : Optional[int]
+        User-specified number of factors to highlight, by default None
+    figsize : Tuple[int, int]
+        Figure size, by default (12, 8)
+    save_path : Optional[str]
+        Path to save the figure, by default None
+        
+    Returns
+    -------
+    plt.Figure
+        Created figure
+        
+    Examples
+    --------
+    >>> # Visualize marginal improvement with optimal factors highlighted
+    >>> fig = _visualize_marginal_improvement(metrics, optimal_factors, user_factors=15)
+    >>> plt.show()
+    """
+    # Extract factors and variance values
+    factors = sorted([k for k in metrics.keys() if metrics[k]["total_variance"] is not None])
+    
+    if not factors:
+        print("No valid variance metrics available")
+        fig = plt.figure(figsize=figsize)
+        plt.text(0.5, 0.5, "No valid variance metrics available", 
+                 horizontalalignment="center", verticalalignment="center")
+        return fig
+    
+    if len(factors) <= 1:
+        print("Need at least two factor values to calculate marginal improvement")
+        fig = plt.figure(figsize=figsize)
+        plt.text(0.5, 0.5, "Need at least two factor values to calculate marginal improvement", 
+                 horizontalalignment="center", verticalalignment="center")
+        return fig
+        
+    variance = [metrics[k]["total_variance"] for k in factors]
+    
+    # Calculate marginal improvements
+    diffs = np.diff(variance)
+    diffs = np.append(diffs, diffs[-1])  # Pad to match length
+    
+    # Create figure
+    fig = plt.figure(figsize=figsize)
+    
+    # Plot bars for all factors
+    bars = plt.bar(factors, diffs, color="green", alpha=0.6, width=min(2, (factors[-1] - factors[0]) / len(factors) / 2))
+    
+    # Calculate mean improvement
+    mean_improvement = np.mean(diffs)
+    half_mean = mean_improvement / 2
+    
+    # Add threshold line
+    plt.axhline(
+        y=half_mean, 
+        color="red", 
+        linestyle="--", 
+        label=f"Half of mean improvement ({half_mean:.4f})"
+    )
+    
+    # Highlight optimal factors if provided
+    colors = {K_SELECTION_CRITERIA.ELBOW: "red", K_SELECTION_CRITERIA.THRESHOLD: "green", K_SELECTION_CRITERIA.BALANCED: "purple"}
+    highlighted_factors = set()
+    
+    if optimal_factors:
+        for method, n_factors in optimal_factors.items():
+            if n_factors in factors and n_factors not in highlighted_factors:
+                highlighted_factors.add(n_factors)
+                color = colors.get(method, "gray")
+                idx = factors.index(n_factors)
+                plt.bar(
+                    [n_factors], 
+                    [diffs[idx]], 
+                    color=color, 
+                    alpha=1.0, 
+                    width=min(2, (factors[-1] - factors[0]) / len(factors) / 2),
+                    label=f"{method.capitalize()}: {n_factors} factors"
+                )
+    
+    # Highlight user-specified factors if provided
+    if user_factors and user_factors in factors and user_factors not in highlighted_factors:
+        idx = factors.index(user_factors)
+        plt.bar(
+            [user_factors], 
+            [diffs[idx]], 
+            color="orange", 
+            alpha=1.0, 
+            width=min(2, (factors[-1] - factors[0]) / len(factors) / 2),
+            label=f"User-specified: {user_factors} factors"
+        )
+    
+    plt.xlabel("Number of factors")
+    plt.ylabel("Marginal variance explained")
+    plt.title("Marginal improvement per additional factor")
+    plt.grid(True, alpha=0.3)
+    plt.legend(loc="best")
+    plt.tight_layout()
+    
+    # Save figure if requested
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    
+    return fig
+
+
+def _visualize_modality_variance(
+    metrics: Dict[int, Dict[str, Any]],
+    optimal_factors: Optional[Dict[str, int]] = None,
+    user_factors: Optional[int] = None,
+    figsize: Tuple[int, int] = (12, 8),
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Create a plot of variance explained per modality by number of factors.
+    
+    Parameters
+    ----------
+    metrics : Dict[int, Dict[str, Any]]
+        Dictionary with variance metrics for each factor value
+    optimal_factors : Optional[Dict[str, int]]
+        Dictionary mapping method names to optimal factor values, by default None
+    user_factors : Optional[int]
+        User-specified number of factors to highlight, by default None
+    figsize : Tuple[int, int]
+        Figure size, by default (12, 8)
+    save_path : Optional[str]
+        Path to save the figure, by default None
+        
+    Returns
+    -------
+    plt.Figure
+        Created figure
+    """
+    # Extract factors with valid metrics
+    factors = sorted([k for k in metrics.keys() if metrics[k][VARIANCE_METRICS_DEFS.TOTAL_VARIANCE] is not None])
+    
+    if not factors:
+        print("No valid variance metrics available")
+        fig = plt.figure(figsize=figsize)
+        plt.text(0.5, 0.5, "No valid variance metrics available", 
+                 horizontalalignment="center", verticalalignment="center")
+        return fig
+    
+    # Gather modality data
+    mod_data = []
+    for n_factors in factors:
+        if metrics[n_factors][VARIANCE_METRICS_DEFS.MODALITY_VARIANCE]:
+            mod_vars = metrics[n_factors][VARIANCE_METRICS_DEFS.MODALITY_VARIANCE]
+            for mod, var in mod_vars.items():
+                if var is not None:
+                    mod_data.append({
+                        "factors": n_factors, 
+                        "modality": mod, 
+                        "variance": var
+                    })
+    
+    if not mod_data:
+        print("No modality-specific variance data available")
+        fig = plt.figure(figsize=figsize)
+        plt.text(0.5, 0.5, "No modality-specific variance data available", 
+                 horizontalalignment="center", verticalalignment="center")
+        return fig
+    
+    # Create DataFrame for plotting
+    mod_df = pd.DataFrame(mod_data)
+    
+    # Create figure
+    fig = plt.figure(figsize=figsize)
+    
+    # Plot modality-specific variances
+    sns.lineplot(data=mod_df, x="factors", y="variance", hue="modality", marker="o", markersize=8)
+    
+    # Highlight optimal factors if provided
+    colors = {K_SELECTION_CRITERIA.ELBOW: "red", K_SELECTION_CRITERIA.THRESHOLD: "green", K_SELECTION_CRITERIA.BALANCED: "purple"}
+    
+    if optimal_factors:
+        for method, n_factors in optimal_factors.items():
+            if n_factors in factors:
+                color = colors.get(method, "gray")
+                plt.axvline(
+                    x=n_factors, 
+                    color=color, 
+                    linestyle="--", 
+                    alpha=0.7,
+                    label=f"{method.capitalize()}: {n_factors} factors"
+                )
+    
+    # Highlight user-specified factors if provided
+    if user_factors and user_factors in factors:
+        plt.axvline(
+            x=user_factors, 
+            color="orange", 
+            linestyle="--", 
+            alpha=0.7,
+            label=f"User-specified: {user_factors} factors"
+        )
+    
+    plt.xlabel("Number of factors")
+    plt.ylabel("Variance explained (%)")
+    plt.title("Modality-specific variance explained")
+    
+    # Set y-axis to percentage scale
+    plt.ylim(0, min(100, mod_df["variance"].max() * 1.1))
+    
+    plt.legend(title="Modality", bbox_to_anchor=(1.05, 1), loc="upper left")
+    plt.tight_layout()
+    
+    # Save figure if requested
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    
+    return fig
+
+def _factor_idx_to_name(idx: int) -> str:
+    """Convert 0-based factor index to factor name (e.g. 0 -> 'Factor_1')."""
+    return FACTOR_NAME_PATTERN.format(idx + 1)
+
+def _factor_name_to_idx(name: str) -> int:
+    """Convert factor name to 0-based index (e.g. 'Factor_1' -> 0)."""
+    try:
+        return int(name.split('_')[1]) - 1
+    except (IndexError, ValueError) as e:
+        raise ValueError(f"Invalid factor name '{name}'. Expected format: 'Factor_N' where N is a positive integer.") from e

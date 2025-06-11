@@ -195,7 +195,7 @@ def _apply_fdr_correction(df: pd.DataFrame, mask: pd.Series, fdr_method: str) ->
     else:
         df.loc[mask, STATISTICS_DEFS.Q_VALUE] = np.nan
 
-def control_fdr(results_df: pd.DataFrame, fdr_method: str = FDR_METHODS_DEFS.FDR_BH) -> pd.DataFrame:
+def control_fdr(results_df: pd.DataFrame, fdr_method: str = FDR_METHODS_DEFS.BH) -> pd.DataFrame:
     """
     Apply FDR control to p-values, grouping by term and model_name (if present).
     
@@ -335,7 +335,7 @@ def fit_parallel_models_formula(
     n_jobs: int = 1,
     allow_failures: bool = False,
     fdr_control: bool = True,
-    fdr_method: str = FDR_METHODS_DEFS.FDR_BH,
+    fdr_method: str = FDR_METHODS_DEFS.BH,
     batch_size: int = 100,
     progress_bar: bool = True,
     **model_kwargs
