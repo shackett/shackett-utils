@@ -1,1 +1,1 @@
-""" Statistics utilities """
+"""Statistics utilities"""

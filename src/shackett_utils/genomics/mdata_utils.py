@@ -19,7 +19,7 @@ def create_minimal_mudata(
     """
     Create a minimal copy of a MuData object with only essential components
     to avoid serialization issues.
-    
+
     Parameters
     ----------
     original_mdata : md.MuData
@@ -30,58 +30,54 @@ def create_minimal_mudata(
         Whether to include obsm matrices, by default True
     include_varm : bool
         Whether to include varm matrices, by default False
-        
+
     Returns
     -------
     md.MuData
         Minimal MuData object
-        
+
     Examples
     --------
     >>> # Create a minimal copy with just the log-normalized layer
     >>> minimal_mdata = create_minimal_mudata(
-    ...     mdata, 
-    ...     include_layers=["log_normalized"], 
+    ...     mdata,
+    ...     include_layers=["log_normalized"],
     ...     include_obsm=True
     ... )
     """
     # Create dictionary to hold modalities
     modalities = {}
-    
+
     # Copy over each modality with minimal data
     for mod_name, mod in original_mdata.mod.items():
         # Create basic AnnData with just X, obs, and var
-        new_mod = ad.AnnData(
-            X=mod.X.copy(),
-            obs=mod.obs.copy(),
-            var=mod.var.copy()
-        )
-        
+        new_mod = ad.AnnData(X=mod.X.copy(), obs=mod.obs.copy(), var=mod.var.copy())
+
         # Add selected layers if present
         if include_layers and hasattr(mod, "layers"):
             for layer_name in include_layers:
                 if layer_name in mod.layers:
                     new_mod.layers[layer_name] = mod.layers[layer_name].copy()
-        
+
         # Add obsm matrices if requested
         if include_obsm and hasattr(mod, "obsm"):
             for obsm_key in mod.obsm.keys():
                 new_mod.obsm[obsm_key] = mod.obsm[obsm_key].copy()
-        
+
         # Add varm matrices if requested
         if include_varm and hasattr(mod, "varm"):
             for varm_key in mod.varm.keys():
                 new_mod.varm[varm_key] = mod.varm[varm_key].copy()
-        
+
         # Add to modalities dictionary
         modalities[mod_name] = new_mod
-    
+
     # Create MuData object with dictionary of modalities
     minimal_mdata = md.MuData(modalities)
-    
+
     # Copy global obsm if present and requested
     if include_obsm and hasattr(original_mdata, "obsm"):
         for obsm_key in original_mdata.obsm.keys():
             minimal_mdata.obsm[obsm_key] = original_mdata.obsm[obsm_key].copy()
-    
-    return minimal_mdata 
+
+    return minimal_mdata

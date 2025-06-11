@@ -1,6 +1,7 @@
 """
 Statistical visualization functions.
 """
+
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -8,6 +9,7 @@ import matplotlib.pyplot as plt
 from scipy.stats import kstest
 from typing import Optional, Tuple, Dict, List, Union
 from .constants import STATISTICS_DEFS
+
 
 def plot_pvalue_histograms(
     data: pd.DataFrame,
@@ -64,7 +66,7 @@ def plot_pvalue_histograms(
     """
     # Set plot style
     sns.set_style("whitegrid")
-    plt.rcParams.update({'font.size': 12})
+    plt.rcParams.update({"font.size": 12})
 
     # Handle terms input
     if isinstance(terms, str):
@@ -87,22 +89,29 @@ def plot_pvalue_histograms(
                 figsize=figsize,
                 include_stats=include_stats,
                 show_ks_test=show_ks_test,
-                fdr_cutoff=fdr_cutoff
+                fdr_cutoff=fdr_cutoff,
             )
         return figures
 
     # Handle partition values input
     if isinstance(partition_values, str):
         partition_values = [partition_values]
-    unique_partitions = (data[partition_column].unique() if partition_values is None 
-                        else partition_values)
+    unique_partitions = (
+        data[partition_column].unique()
+        if partition_values is None
+        else partition_values
+    )
     if partition_values is not None:
-        missing_partitions = [p for p in partition_values 
-                            if p not in data[partition_column].unique()]
+        missing_partitions = [
+            p for p in partition_values if p not in data[partition_column].unique()
+        ]
         if missing_partitions:
-            raise ValueError(f"Partition values not found in data: {missing_partitions}")
-        unique_partitions = [p for p in partition_values 
-                           if p in data[partition_column].unique()]
+            raise ValueError(
+                f"Partition values not found in data: {missing_partitions}"
+            )
+        unique_partitions = [
+            p for p in partition_values if p in data[partition_column].unique()
+        ]
 
     # Create figures for each term-partition combination
     figures = {}
@@ -112,7 +121,7 @@ def plot_pvalue_histograms(
             # Filter data for this term-partition combination
             mask = (data[term_column] == term) & (data[partition_column] == partition)
             term_partition_data = data[mask]
-            
+
             if len(term_partition_data) > 0:  # Only create plot if data exists
                 figures[term][partition] = plot_term_pvalue_histogram(
                     term_partition_data,
@@ -121,10 +130,11 @@ def plot_pvalue_histograms(
                     include_stats=include_stats,
                     show_ks_test=show_ks_test,
                     fdr_cutoff=fdr_cutoff,
-                    title_prefix=f"{partition} - "
+                    title_prefix=f"{partition} - ",
                 )
 
-    return figures 
+    return figures
+
 
 def plot_term_pvalue_histogram(
     data: pd.DataFrame,
@@ -168,32 +178,35 @@ def plot_term_pvalue_histogram(
 
     # Plot raw p-values histogram
     _plot_raw_pvalue_histogram(data, axes[0], include_stats)
-    
+
     # Plot QQ plot
     _plot_pvalue_qq(data, axes[1])
-    
+
     # Plot FDR-corrected p-values if available
     if n_panels == 3:
         _plot_qvalue_histogram(data, axes[2], fdr_cutoff, include_stats)
 
     # KS test
     if show_ks_test:
-        ks_stat, ks_pval = kstest(data[STATISTICS_DEFS.P_VALUE], 'uniform')
-        fig.text(0.5, 0.01,
-                 f"Kolmogorov-Smirnov test against uniform distribution: "
-                 f"statistic={ks_stat:.4f}, p-value={ks_pval:.4f}",
-                 ha='center', fontsize=12)
+        ks_stat, ks_pval = kstest(data[STATISTICS_DEFS.P_VALUE], "uniform")
+        fig.text(
+            0.5,
+            0.01,
+            f"Kolmogorov-Smirnov test against uniform distribution: "
+            f"statistic={ks_stat:.4f}, p-value={ks_pval:.4f}",
+            ha="center",
+            fontsize=12,
+        )
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     return fig
 
+
 def _plot_raw_pvalue_histogram(
-    data: pd.DataFrame,
-    ax: plt.Axes,
-    include_stats: bool = True
+    data: pd.DataFrame, ax: plt.Axes, include_stats: bool = True
 ) -> None:
     """Plot histogram of raw p-values with uniform distribution reference line.
-    
+
     Parameters
     ----------
     data : pd.DataFrame
@@ -211,7 +224,7 @@ def _plot_raw_pvalue_histogram(
     # Add reference uniform distribution line
     x = np.linspace(0, 1, 100)
     y = len(data) * 0.05  # Adjust height based on data
-    ax.plot(x, [y] * 100, 'r--', label='Uniform Distribution')
+    ax.plot(x, [y] * 100, "r--", label="Uniform Distribution")
     ax.legend()
 
     if include_stats:
@@ -221,17 +234,19 @@ def _plot_raw_pvalue_histogram(
         sig_pct = 100 * sig_count / len(data)
         stats_text = f"Mean: {avg_p:.4f}\nMedian: {median_p:.4f}\n"
         stats_text += f"Significant: {sig_count}/{len(data)} ({sig_pct:.1f}%)"
-        ax.text(0.05, 0.95, stats_text,
-                transform=ax.transAxes,
-                verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        ax.text(
+            0.05,
+            0.95,
+            stats_text,
+            transform=ax.transAxes,
+            verticalalignment="top",
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+        )
 
-def _plot_pvalue_qq(
-    data: pd.DataFrame,
-    ax: plt.Axes
-) -> None:
+
+def _plot_pvalue_qq(data: pd.DataFrame, ax: plt.Axes) -> None:
     """Plot QQ plot of p-values against uniform distribution.
-    
+
     Parameters
     ----------
     data : pd.DataFrame
@@ -242,19 +257,20 @@ def _plot_pvalue_qq(
     pvals = np.sort(data[STATISTICS_DEFS.P_VALUE])
     expected = np.linspace(0, 1, len(pvals) + 1)[1:]
     ax.scatter(expected, pvals, alpha=0.5)
-    ax.plot([0, 1], [0, 1], 'r--')
+    ax.plot([0, 1], [0, 1], "r--")
     ax.set_title("P-value QQ Plot")
     ax.set_xlabel("Expected P-value")
     ax.set_ylabel("Observed P-value")
+
 
 def _plot_qvalue_histogram(
     data: pd.DataFrame,
     ax: plt.Axes,
     fdr_cutoff: float = 0.05,
-    include_stats: bool = True
+    include_stats: bool = True,
 ) -> None:
     """Plot histogram of FDR-corrected p-values with cutoff line.
-    
+
     Parameters
     ----------
     data : pd.DataFrame
@@ -270,15 +286,16 @@ def _plot_qvalue_histogram(
     ax.set_title("FDR-corrected P-values (Benjamini-Hochberg)")
     ax.set_xlabel("Adjusted P-value")
     ax.set_ylabel("Count")
-    
+
     # Set x-axis limits from 0 to 1
     ax.set_xlim(0, 1)
-    
+
     # Add vertical line at FDR cutoff
-    ax.axvline(x=fdr_cutoff, color='red', linestyle='--', 
-               label=f'FDR cutoff: {fdr_cutoff}')
+    ax.axvline(
+        x=fdr_cutoff, color="red", linestyle="--", label=f"FDR cutoff: {fdr_cutoff}"
+    )
     ax.legend()
-    
+
     if include_stats:
         avg_fdr = data[STATISTICS_DEFS.Q_VALUE].mean()
         median_fdr = data[STATISTICS_DEFS.Q_VALUE].median()
@@ -286,7 +303,11 @@ def _plot_qvalue_histogram(
         sig_pct_fdr = 100 * sig_count_fdr / len(data)
         stats_text = f"Mean: {avg_fdr:.4f}\nMedian: {median_fdr:.4f}\n"
         stats_text += f"Significant: {sig_count_fdr}/{len(data)} ({sig_pct_fdr:.1f}%)"
-        ax.text(0.05, 0.95, stats_text,
-                transform=ax.transAxes,
-                verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        ax.text(
+            0.05,
+            0.95,
+            stats_text,
+            transform=ax.transAxes,
+            verticalalignment="top",
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+        )

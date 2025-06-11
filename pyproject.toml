@@ -26,25 +26,25 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=7.0", "pytest-cov"]
-data = ["numpy"]
+data = ["numpy<2.0"]
 genomics = ["anndata", "mudata", "muon", "scanpy"]
-statistics = ["scipy", "statsmodels", "pygam"]
+statistics = ["scipy<1.13", "statsmodels", "pygam>=0.8.0"]
 viz = ["matplotlib", "seaborn"]
 all = [
     # test dependencies
     "pytest>=7.0",
     "pytest-cov",
     # data dependencies
-    "numpy",
+    "numpy<2.0",
     # genomics dependencies
     "anndata",
-    "mudata",
+    "mudata", 
     "muon",
     "scanpy",
     # statistics dependencies
-    "scipy",
+    "scipy<1.13",
     "statsmodels",
-    "pygam",
+    "pygam>=0.8.0",
     # visualization dependencies
     "matplotlib",
     "seaborn"

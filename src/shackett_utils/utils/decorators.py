@@ -7,24 +7,26 @@ import io
 import sys
 from typing import Callable, TypeVar, ParamSpec
 
-P = ParamSpec('P')
-T = TypeVar('T')
+P = ParamSpec("P")
+T = TypeVar("T")
+
 
 def suppress_stdout(func: Callable[P, T]) -> Callable[P, T]:
     """
     A decorator that suppresses stdout output from a function.
     Particularly useful for suppressing MOFA's verbose output during testing.
-    
+
     Parameters
     ----------
     func : Callable
         The function to wrap
-        
+
     Returns
     -------
     Callable
         The wrapped function that will execute with suppressed stdout
     """
+
     @functools.wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
         # Store the original stdout
@@ -38,4 +40,5 @@ def suppress_stdout(func: Callable[P, T]) -> Callable[P, T]:
         finally:
             # Restore stdout
             sys.stdout = stdout
-    return wrapper 
+
+    return wrapper
