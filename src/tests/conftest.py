@@ -1,24 +1,64 @@
 """
 Global pytest configuration and fixtures.
 """
-import pytest
+# Configure warnings before any imports
 import warnings
+from shackett_utils.config import configure_warnings
+configure_warnings()
+
+# Now import other dependencies
+import pytest
 import numpy as np
 import pandas as pd
 import mudata as md
 import anndata as ad
+from anndata._core.aligned_df import ImplicitModificationWarning
 
-# Configure pytest to ignore specific numpy deprecation warnings
 @pytest.fixture(autouse=True)
-def ignore_numpy_warnings():
+def ignore_all_warnings():
+    """Fixture to ignore all known warnings during tests."""
     with warnings.catch_warnings():
+        # anndata warnings
         warnings.filterwarnings(
             "ignore",
-            category=DeprecationWarning,
-            module="pandas.core.dtypes.cast",
-            message=".*find_common_type is deprecated.*"
+            message="Transforming to str index",
+            category=ImplicitModificationWarning
         )
-        yield 
+        
+        # pandas/numpy warnings
+        warnings.filterwarnings(
+            "ignore",
+            message="np.find_common_type is deprecated",
+            category=DeprecationWarning
+        )
+        
+        # MOFA warnings
+        warnings.filterwarnings(
+            "ignore",
+            message="divide by zero encountered in log",
+            category=RuntimeWarning
+        )
+        warnings.filterwarnings(
+            "ignore",
+            message="invalid value encountered in multiply",
+            category=RuntimeWarning
+        )
+        
+        # statsmodels warnings
+        warnings.filterwarnings(
+            "ignore",
+            message="divide by zero encountered in scalar divide",
+            category=RuntimeWarning
+        )
+        
+        # muon warnings
+        warnings.filterwarnings(
+            "ignore",
+            message="There is no column highly_variable in the provided object",
+            category=UserWarning
+        )
+        
+        yield
 
 @pytest.fixture
 def simple_mdata():
@@ -78,4 +118,13 @@ def simple_mdata():
     # Create MuData object
     mdata = md.MuData({'rna': rna, 'atac': atac})
     
-    return mdata 
+    return mdata
+
+def pytest_configure(config):
+    """Configure pytest - runs before test collection.
+    
+    Args:
+        config: The pytest config object passed automatically by pytest
+    """
+    # Use the centralized warning configuration
+    configure_warnings() 

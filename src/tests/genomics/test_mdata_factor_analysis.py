@@ -18,6 +18,7 @@ def test_mofa_variance_metrics(simple_mdata):
             simple_mdata,
             n_factors=n_factors,
             use_layer="log2_centered",
+            use_var=None,  # Explicitly disable variable selection
             seed=42
         )
         
@@ -62,6 +63,7 @@ def test_mofa_factor_analysis(simple_mdata, tmp_path):
         simple_mdata,
         factor_range=[2, 4],  # Test with just 2 factor values for speed
         use_layer="log2_centered",
+        use_var=None,  # Explicitly disable variable selection
         models_dir=models_dir,
         seed=42
     )
@@ -83,7 +85,7 @@ def test_mofa_factor_analysis(simple_mdata, tmp_path):
     for n_factors in [2, 4]:
         # Load model into a fresh copy of the data
         test_data = simple_mdata.copy()
-        mfa._mofa(test_data, outfile=factor_results[n_factors]["model_file"])
+        mfa._mofa(test_data, outfile=factor_results[n_factors]["model_file"], use_var=None)  # Explicitly disable variable selection
         
         # Calculate metrics directly
         direct_metrics = mfa._calculate_mofa_variance_metrics(test_data, use_layer="log2_centered")
