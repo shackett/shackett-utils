@@ -14,7 +14,12 @@ REGRESSION_DEFAULT_STATS: List[str] = [
     TIDY_DEFS.STD_ERROR,  # Standard errors
 ]
 
-MOFA_DEFS = SimpleNamespace(FACTOR_NAME="factor_name", X_MOFA="X_mofa", LFS="LFs")
+MOFA_DEFS = SimpleNamespace(
+    FACTOR_NAME="factor_name",
+    X_MOFA="X_mofa",
+    LFS="LFs",
+    FORMULA_NAME="formula_name",
+)
 
 VARIANCE_METRICS_DEFS = SimpleNamespace(
     TOTAL_VARIANCE="total_variance",

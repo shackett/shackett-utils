@@ -6,7 +6,7 @@ import statsmodels.formula.api as smf
 from pygam import LinearGAM
 from abc import ABC, abstractmethod
 from typing import Optional, Dict
-from .constants import REQUIRED_TIDY_VARS, STATISTICS_DEFS, TIDY_DEFS
+from .constants import REQUIRED_TIDY_VARS, STATISTICS_DEFS, TIDY_DEFS, GLANCE_DEFS
 
 logger = logging.getLogger(__name__)
 
@@ -252,17 +252,17 @@ class OLSModel(StatisticalModel):
 
         glance_df = pd.DataFrame(
             {
-                "r_squared": [model.rsquared],
-                "adj_r_squared": [model.rsquared_adj],
-                "sigma": [np.sqrt(model.mse_resid)],
-                "statistic": [model.fvalue],
-                "p_value": [model.f_pvalue],
-                "df": [model.df_model],
-                "df_residual": [model.df_resid],
-                "nobs": [int(model.nobs)],
-                "aic": [model.aic],
-                "bic": [model.bic],
-                "log_likelihood": [model.llf],
+                GLANCE_DEFS.R_SQUARED: [model.rsquared],
+                GLANCE_DEFS.ADJUSTED_R_SQUARED: [model.rsquared_adj],
+                GLANCE_DEFS.SIGMA: [np.sqrt(model.mse_resid)],
+                GLANCE_DEFS.STATISTIC: [model.fvalue],
+                GLANCE_DEFS.P_VALUE: [model.f_pvalue],
+                GLANCE_DEFS.DF: [model.df_model],
+                GLANCE_DEFS.DF_RESIDUAL: [model.df_resid],
+                GLANCE_DEFS.NOBS: [int(model.nobs)],
+                GLANCE_DEFS.AIC: [model.aic],
+                GLANCE_DEFS.BIC: [model.bic],
+                GLANCE_DEFS.LOG_LIKELIHOOD: [model.llf],
             }
         )
 

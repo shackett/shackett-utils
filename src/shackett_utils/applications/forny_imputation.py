@@ -5,16 +5,11 @@ import pandas as pd
 
 from scipy.spatial.distance import pdist, squareform
 from scipy.cluster.hierarchy import linkage, leaves_list
-from scipy.stats import kstest
-from typing import Dict, Any, Optional, Union, TypeVar
+from typing import TypeVar
 
-from shackett_utils.statistics.transform import (
-    best_normalizing_transform,
-    transform_func_map,
-    _is_valid_transform
-)
 
-T = TypeVar('T', np.ndarray, pd.Series)
+T = TypeVar("T", np.ndarray, pd.Series)
+
 
 def plot_clustered_missing_pattern(phenotypes_df, max_missing=100, min_unique=10):
     """
@@ -89,7 +84,7 @@ def plot_clustered_correlation_heatmap(
     pairwise_dists = pairwise_dists.fillna(0)
     # Ensure diagonal is exactly 0 (to avoid floating point issues)
     np.fill_diagonal(pairwise_dists.values, 0)
-    
+
     row_linkage = linkage(squareform(pairwise_dists), method="average")
     col_linkage = linkage(squareform(pairwise_dists.T), method="average")
 

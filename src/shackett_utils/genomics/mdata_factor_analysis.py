@@ -8,6 +8,7 @@ with different numbers of factors.
 import os
 from typing import Dict, List, Tuple, Optional, Iterable, Any, Union
 import json
+import logging
 
 import matplotlib.pyplot as plt
 import mudata as md
@@ -23,10 +24,11 @@ from shackett_utils.statistics.constants import (
     STATISTICS_DEFS,
     FDR_METHODS_DEFS,
     TIDY_DEFS,
+    POSSIBLE_TIDY_VARS,
+    REQUIRED_TIDY_VARS,
 )
 from shackett_utils.genomics.constants import (
     MOFA_DEFS,
-    FACTOR_REGRESSIONS_KEY,
     FACTOR_NAME_PATTERN,
     VARIANCE_METRICS_DEFS,
     K_SELECTION_CRITERIA,
@@ -34,6 +36,8 @@ from shackett_utils.genomics.constants import (
 )
 from shackett_utils.utils.decorators import suppress_stdout
 from shackett_utils.utils.time import get_timestamp
+
+logger = logging.getLogger(__name__)
 
 # Configure MuData to use new update behavior
 md.set_options(pull_on_update=False)
@@ -749,16 +753,16 @@ def summarize_factor_regression(
     regression_results: pd.DataFrame, alpha: float = 0.05, group_by_factor: bool = False
 ) -> pd.DataFrame:
     """
-    Create a summary table of regression results.
+    Summarize factor regression results in a nicely formatted table.
 
     Parameters
     ----------
     regression_results : pd.DataFrame
-        DataFrame with regression results from regress_factors_with_formula()
-    alpha : float, default=0.05
-        Significance threshold for q-values
-    group_by_factor : bool, default=False
-        If True, organize results by factor; otherwise by term
+        Results from factor regression
+    alpha : float
+        Significance level for filtering
+    group_by_factor : bool
+        If True, group and sort by factor instead of term
 
     Returns
     -------
@@ -766,55 +770,49 @@ def summarize_factor_regression(
         Formatted summary table
     """
     if regression_results.empty:
-        print("No regression results to summarize.")
-        return pd.DataFrame()
+        raise ValueError("No regression results to summarize")
 
-    # Use q_value if available, otherwise use p_value
-    p_col = (
-        STATISTICS_DEFS.Q_VALUE
-        if STATISTICS_DEFS.Q_VALUE in regression_results.columns
-        else TIDY_DEFS.P_VALUE
-    )
+    # Validate required columns are present
+    for col in REQUIRED_TIDY_VARS:
+        if col not in regression_results.columns:
+            raise ValueError(f"Required column {col} not found in regression results")
 
-    # Create significance mask
-    results_df = regression_results.copy()
-    results_df["significant"] = results_df[p_col] < alpha
-
-    # Filter for significant results
-    sig_results = results_df[results_df["significant"]].copy()
+    # Filter to significant results
+    sig_results = regression_results.copy()
+    if STATISTICS_DEFS.Q_VALUE in sig_results.columns:
+        sig_results = sig_results[sig_results[STATISTICS_DEFS.Q_VALUE] <= alpha]
+    elif TIDY_DEFS.P_VALUE in sig_results.columns:
+        sig_results = sig_results[sig_results[TIDY_DEFS.P_VALUE] <= alpha]
 
     if sig_results.empty:
-        print(f"No significant associations found at alpha = {alpha}")
-        return pd.DataFrame()
+        logger.debug(f"No significant associations found at alpha = {alpha}")
 
-    # Select relevant columns
-    # TODO - code smell
+    # Define available summary columns (intersection of possible columns and available columns)
     summary_cols = [
-        MOFA_DEFS.FACTOR_NAME,
-        TIDY_DEFS.TERM,
-        TIDY_DEFS.ESTIMATE,
-        TIDY_DEFS.STD_ERROR,
-        TIDY_DEFS.P_VALUE,
+        MOFA_DEFS.FACTOR_NAME,  # Always include factor name
+        *[
+            col for col in POSSIBLE_TIDY_VARS if col in sig_results.columns
+        ],  # Add available tidy vars
         (
             STATISTICS_DEFS.Q_VALUE
-            if STATISTICS_DEFS.Q_VALUE in results_df.columns
-            else TIDY_DEFS.P_VALUE
-        )
+            if STATISTICS_DEFS.Q_VALUE in sig_results.columns
+            else None
+        ),  # Add q-value if available
     ]
+    summary_cols = [
+        col for col in summary_cols if col is not None
+    ]  # Remove None values
 
-    # Check for excluded columns
-    available_cols = []
-    for col in summary_cols:
-        if col in sig_results.columns or (
-            col == STATISTICS_DEFS.Q_VALUE and STATISTICS_DEFS.Q_VALUE not in sig_results.columns
-        ):
-            if col != STATISTICS_DEFS.Q_VALUE or STATISTICS_DEFS.Q_VALUE in sig_results.columns:
-                available_cols.append(col)
+    # Get initial summary with all columns
+    summary_df = sig_results[summary_cols].copy()
 
-    summary_df = sig_results[available_cols].copy()
+    # Drop columns that contain only NaN values
+    non_nan_cols = [
+        col for col in summary_df.columns if not summary_df[col].isna().all()
+    ]
+    summary_df = summary_df[non_nan_cols]
 
-    # Group by factor or term depending on preference
-    # Always sort by p-value and q-value (if available), then by factor or term
+    # Sort by p-value/q-value and grouping variable
     sort_cols = []
     if TIDY_DEFS.P_VALUE in summary_df.columns:
         sort_cols.append(TIDY_DEFS.P_VALUE)
@@ -836,10 +834,6 @@ def summarize_factor_regression(
         if col in summary_df.columns:
             summary_df[col] = summary_df[col].map("{:.2e}".format)
 
-    for col in [TIDY_DEFS.RSQUARED]:
-        if col in summary_df.columns:
-            summary_df[col] = summary_df[col].map("{:.3f}".format)
-
     return summary_df
 
 
@@ -847,7 +841,7 @@ def factor_term_scatterplot(
     mdata: MuData,
     factor: Union[int, str],
     formula_name: str,
-    term: Optional[str] = None,
+    sample_attr: Optional[str] = None,
 ) -> None:
     """
     Scatterplot of a MOFA factor against a sample attribute, with regression line.
@@ -860,7 +854,7 @@ def factor_term_scatterplot(
         Factor index (int) [starting from 0] or name (str) [starting from 1] to plot.
     formula_name : str
         Name of the regression formula used in the analysis.
-    term : str or None, optional
+    sample_attr : str or None, optional
         Name of the sample attribute to plot on the x-axis. If None, uses formula_name.
 
     Returns
@@ -868,10 +862,10 @@ def factor_term_scatterplot(
     None
     """
     # If term is None, use formula_name as the term
-    if term is None:
-        term = formula_name
+    if sample_attr is None:
+        sample_attr = formula_name
 
-    df = _factor_term_sample_attrs(mdata, factor, formula_name, term)
+    df = _factor_sample_attrs(mdata, factor, formula_name, sample_attr)
 
     # Get the factor name
     if isinstance(factor, int):
@@ -883,20 +877,15 @@ def factor_term_scatterplot(
     sns.regplot(
         data=df, x="sample_attribute", y="factor_values", scatter_kws={"alpha": 0.7}
     )
-    plt.xlabel(term)
+    plt.xlabel(sample_attr)
     plt.ylabel(factor_name)
-    # Only show (formula_name) in title if term != formula_name
-    if term == formula_name:
-        title = f"{factor_name} vs {term}"
-    else:
-        title = f"{factor_name} vs {term} ({formula_name})"
-    plt.title(title)
+    plt.title(f"{factor_name} vs {sample_attr}")
     plt.tight_layout()
     plt.show()
 
 
-def _factor_term_sample_attrs(
-    mdata: MuData, factor: Union[int, str], formula_name: str, term: str
+def _factor_sample_attrs(
+    mdata: MuData, factor: Union[int, str], formula_name: str, sample_attr: str
 ) -> pd.DataFrame:
     """
     Helper to extract a DataFrame of sample attribute and factor values for plotting.
@@ -909,7 +898,7 @@ def _factor_term_sample_attrs(
         Factor index (int) [starting from 0] or name (str) [starting from 1] to extract.
     formula_name : str
         Name of the regression formula used in the analysis.
-    term : str
+    sample_attr : str
         Name of the sample attribute to extract.
 
     Returns
@@ -917,33 +906,12 @@ def _factor_term_sample_attrs(
     pd.DataFrame
         DataFrame with columns 'sample_attribute' and 'factor_values'.
     """
-    # Check if regression results exist
-    if FACTOR_REGRESSIONS_KEY not in mdata.uns:
-        raise KeyError(
-            f"No regression results found in mdata.uns under key '{FACTOR_REGRESSIONS_KEY}'"
-        )
-
-    # Get regression results
-    factor_regressions = mdata.uns[FACTOR_REGRESSIONS_KEY]
-
-    # Filter by formula name
-    formula_results = factor_regressions[
-        factor_regressions[MOFA_DEFS.FORMULA_NAME] == formula_name
-    ]
-    if len(formula_results) == 0:
-        raise ValueError(f"No regression results found for formula '{formula_name}'")
 
     # Convert factor to name if it's an index
     if isinstance(factor, int):
         factor_name = _factor_idx_to_name(factor)
     else:
         factor_name = factor
-
-    # Check if factor exists in results for this formula
-    if not (formula_results[MOFA_DEFS.FACTOR_NAME] == factor_name).any():
-        raise ValueError(
-            f"Factor '{factor_name}' not found in regression results for formula '{formula_name}'"
-        )
 
     # Get factor index from name
     factor_idx = _factor_name_to_idx(factor_name)
@@ -952,13 +920,16 @@ def _factor_term_sample_attrs(
     factor_values = mdata.obsm[MOFA_DEFS.X_MOFA][:, factor_idx]
 
     # Get sample attribute from first modality (they should all be the same)
-    sample_attribute = mdata[mdata.mod_names[0]].obs
+    sample_attributes = mdata[mdata.mod_names[0]].obs
 
-    # Check for the term in the sample attribute
-    if term in sample_attribute.columns:
-        sample_attribute = sample_attribute[term]
+    # Check for the sample attribute in the sample attribute
+    if sample_attr in sample_attributes.columns:
+        sample_attribute = sample_attributes[sample_attr]
     else:
-        raise ValueError(f"Term '{term}' not found in sample attribute")
+        available_attrs = list(sample_attributes.columns)
+        raise ValueError(
+            f"Sample attribute '{sample_attr}' not found in sample attributes. Available attributes: {', '.join(available_attrs)}"
+        )
 
     df = pd.DataFrame(
         {"sample_attribute": sample_attribute, "factor_values": factor_values}

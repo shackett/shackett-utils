@@ -1,27 +1,29 @@
 """
 Utilities for data transformations and normalization.
 """
+
 from typing import Dict, Any
 import numpy as np
 import pandas as pd
 from scipy.stats import kstest, boxcox
 from sklearn.preprocessing import PowerTransformer
 
+
 def _is_valid_transform(transformed_values: np.ndarray) -> bool:
     """
     Check if transformed values are reasonable.
-    
+
     Parameters
     ----------
     transformed_values : np.ndarray
         The transformed values to validate
-        
+
     Returns
     -------
     bool
         True if the transformation produced reasonable values (no extreme or non-finite values),
         False otherwise
-    
+
     Notes
     -----
     A transformation is considered invalid if it:
@@ -30,19 +32,21 @@ def _is_valid_transform(transformed_values: np.ndarray) -> bool:
     """
     if not isinstance(transformed_values, np.ndarray):
         transformed_values = np.asarray(transformed_values)
-    return not (np.any(np.abs(transformed_values) > 1e10) or 
-               np.any(~np.isfinite(transformed_values)))
+    return not (
+        np.any(np.abs(transformed_values) > 1e10)
+        or np.any(~np.isfinite(transformed_values))
+    )
 
 
 def filter_valid_transforms(results: Dict[str, Any]) -> Dict[str, Any]:
     """
     Filter transformation results to remove any with invalid values.
-    
+
     Parameters
     ----------
     results : Dict[str, Any]
         Results dictionary from best_normalizing_transform
-        
+
     Returns
     -------
     Dict[str, Any]
@@ -50,12 +54,12 @@ def filter_valid_transforms(results: Dict[str, Any]) -> Dict[str, Any]:
         (their p-values set to NaN)
     """
     filtered = results.copy()
-    
+
     # Check each transformation except 'best'
     for name in results:
-        if name == 'best':
+        if name == "best":
             continue
-            
+
         # Get the transformed values using transform_func_map
         if name in transform_func_map and not np.isnan(results[name]["p"]):
             try:
@@ -66,33 +70,32 @@ def filter_valid_transforms(results: Dict[str, Any]) -> Dict[str, Any]:
             except Exception:
                 filtered[name]["p"] = np.nan
                 filtered[name]["stat"] = np.nan
-    
+
     # Recompute best transformation
     valid_transforms = {
-        k: v["p"] for k, v in filtered.items() 
-        if k != "best" and not np.isnan(v["p"])
+        k: v["p"] for k, v in filtered.items() if k != "best" and not np.isnan(v["p"])
     }
-    
+
     if valid_transforms:
         filtered["best"] = max(valid_transforms.items(), key=lambda x: x[1])[0]
     else:
         filtered["best"] = "original"
-    
+
     return filtered
 
 
 def best_normalizing_transform(series: pd.Series) -> Dict[str, Any]:
     """
     Find the best normalizing transformation for a series of values.
-    
+
     Tests multiple transformations and selects the one that produces the most
     normally distributed results according to the Kolmogorov-Smirnov test.
-    
+
     Parameters
     ----------
     series : pd.Series
         The data to transform
-        
+
     Returns
     -------
     Dict[str, Any]
@@ -103,22 +106,22 @@ def best_normalizing_transform(series: pd.Series) -> Dict[str, Any]:
             - 'stat': KS test statistic
             - 'p': KS test p-value
         - Additional key 'best' contains the name of the best transformation
-            
+
     Raises
     ------
     ValueError
         If the input series has less than 2 values or contains all identical non-zero values
     """
     s = series.dropna()
-    
+
     # Check if data is too small
     if len(s) < 2:
         raise ValueError("Data must have at least 2 unique values for transformation.")
-        
+
     # Check if data is constant and non-zero (allow zeros since they can be transformed)
     if np.all(s == s.iloc[0]) and s.iloc[0] != 0:
         raise ValueError("Data must have at least 2 unique values for transformation.")
-        
+
     results = {}
 
     # Original
@@ -188,4 +191,4 @@ transform_func_map = {
         index=x.dropna().index,
     ).reindex(x.index),
     "arcsinh": np.arcsinh,
-} 
+}
