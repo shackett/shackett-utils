@@ -5,9 +5,16 @@ import pandas as pd
 
 from scipy.spatial.distance import pdist, squareform
 from scipy.cluster.hierarchy import linkage, leaves_list
-from scipy.stats import kstest, boxcox
-from sklearn.preprocessing import PowerTransformer
+from scipy.stats import kstest
+from typing import Dict, Any, Optional, Union, TypeVar
 
+from shackett_utils.statistics.transform import (
+    best_normalizing_transform,
+    transform_func_map,
+    _is_valid_transform
+)
+
+T = TypeVar('T', np.ndarray, pd.Series)
 
 def plot_clustered_missing_pattern(phenotypes_df, max_missing=100, min_unique=10):
     """
@@ -47,77 +54,6 @@ def plot_clustered_missing_pattern(phenotypes_df, max_missing=100, min_unique=10
     plt.show()
 
 
-def best_normalizing_transform(series):
-    s = series.dropna()
-    results = {}
-
-    # Original
-    stat, p = kstest((s - s.mean()) / s.std(), "norm")
-    results["original"] = {"stat": stat, "p": p}
-
-    # log2 (only for positive values)
-    if (s > 0).all():
-        s_log2 = np.log2(s)
-        stat, p = kstest((s_log2 - s_log2.mean()) / s_log2.std(), "norm")
-        results["log2"] = {"stat": stat, "p": p}
-        # Box-Cox
-        s_boxcox, _ = boxcox(s)
-        stat, p = kstest((s_boxcox - s_boxcox.mean()) / s_boxcox.std(), "norm")
-        results["boxcox"] = {"stat": stat, "p": p}
-    else:
-        results["log2"] = {"stat": np.nan, "p": np.nan}
-        results["boxcox"] = {"stat": np.nan, "p": np.nan}
-
-    # sqrt (only for non-negative values)
-    if (s >= 0).all():
-        s_sqrt = np.sqrt(s)
-        stat, p = kstest((s_sqrt - s_sqrt.mean()) / s_sqrt.std(), "norm")
-        results["sqrt"] = {"stat": stat, "p": p}
-    else:
-        results["sqrt"] = {"stat": np.nan, "p": np.nan}
-
-    # Yeo-Johnson (can handle negatives)
-    try:
-        pt = PowerTransformer(method="yeo-johnson")
-        s_yeojohnson = pt.fit_transform(s.values.reshape(-1, 1)).flatten()
-        stat, p = kstest(
-            (s_yeojohnson - s_yeojohnson.mean()) / s_yeojohnson.std(), "norm"
-        )
-        results["yeo-johnson"] = {"stat": stat, "p": p}
-    except Exception:
-        results["yeo-johnson"] = {"stat": np.nan, "p": np.nan}
-
-    # Arcsinh (can handle negatives)
-    s_arcsinh = np.arcsinh(s)
-    stat, p = kstest((s_arcsinh - s_arcsinh.mean()) / s_arcsinh.std(), "norm")
-    results["arcsinh"] = {"stat": stat, "p": p}
-
-    # Find the best (highest p-value)
-    best = max(
-        results, key=lambda k: results[k]["p"] if not np.isnan(results[k]["p"]) else -1
-    )
-    results["best"] = best
-
-    return results
-
-
-transform_func_map = {
-    "original": lambda x: x,
-    "log2": np.log2,
-    "sqrt": np.sqrt,
-    "boxcox": lambda x: pd.Series(
-        boxcox(x.dropna())[0], index=x.dropna().index
-    ).reindex(x.index),
-    "yeo-johnson": lambda x: pd.Series(
-        PowerTransformer(method="yeo-johnson")
-        .fit_transform(x.dropna().values.reshape(-1, 1))
-        .flatten(),
-        index=x.dropna().index,
-    ).reindex(x.index),
-    "arcsinh": np.arcsinh,
-}
-
-
 def transform_columns(df, transform_dict):
     """
     Transform columns in a DataFrame according to a dict of transformations.
@@ -150,7 +86,10 @@ def plot_clustered_correlation_heatmap(
     # Use 1 - correlation as the distance metric
     pairwise_dists = 1 - corr_matrix
     # Replace NaN with 0 (perfect correlation) for clustering
-    pairwise_dists = pairwise_dists.fillna(int(0))
+    pairwise_dists = pairwise_dists.fillna(0)
+    # Ensure diagonal is exactly 0 (to avoid floating point issues)
+    np.fill_diagonal(pairwise_dists.values, 0)
+    
     row_linkage = linkage(squareform(pairwise_dists), method="average")
     col_linkage = linkage(squareform(pairwise_dists.T), method="average")
 

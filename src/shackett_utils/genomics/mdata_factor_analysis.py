@@ -771,8 +771,8 @@ def summarize_factor_regression(
 
     # Use q_value if available, otherwise use p_value
     p_col = (
-        TIDY_DEFS.Q_VALUE
-        if TIDY_DEFS.Q_VALUE in regression_results.columns
+        STATISTICS_DEFS.Q_VALUE
+        if STATISTICS_DEFS.Q_VALUE in regression_results.columns
         else TIDY_DEFS.P_VALUE
     )
 
@@ -796,21 +796,19 @@ def summarize_factor_regression(
         TIDY_DEFS.STD_ERROR,
         TIDY_DEFS.P_VALUE,
         (
-            TIDY_DEFS.Q_VALUE
-            if TIDY_DEFS.Q_VALUE in results_df.columns
+            STATISTICS_DEFS.Q_VALUE
+            if STATISTICS_DEFS.Q_VALUE in results_df.columns
             else TIDY_DEFS.P_VALUE
-        ),
-        TIDY_DEFS.RSQUARED,
-        TIDY_DEFS.NOBS,
+        )
     ]
 
     # Check for excluded columns
     available_cols = []
     for col in summary_cols:
         if col in sig_results.columns or (
-            col == TIDY_DEFS.Q_VALUE and TIDY_DEFS.Q_VALUE not in sig_results.columns
+            col == STATISTICS_DEFS.Q_VALUE and STATISTICS_DEFS.Q_VALUE not in sig_results.columns
         ):
-            if col != TIDY_DEFS.Q_VALUE or TIDY_DEFS.Q_VALUE in sig_results.columns:
+            if col != STATISTICS_DEFS.Q_VALUE or STATISTICS_DEFS.Q_VALUE in sig_results.columns:
                 available_cols.append(col)
 
     summary_df = sig_results[available_cols].copy()
@@ -820,8 +818,8 @@ def summarize_factor_regression(
     sort_cols = []
     if TIDY_DEFS.P_VALUE in summary_df.columns:
         sort_cols.append(TIDY_DEFS.P_VALUE)
-    if TIDY_DEFS.Q_VALUE in summary_df.columns:
-        sort_cols.append(TIDY_DEFS.Q_VALUE)
+    if STATISTICS_DEFS.Q_VALUE in summary_df.columns:
+        sort_cols.append(STATISTICS_DEFS.Q_VALUE)
     # Add grouping column
     if group_by_factor:
         sort_cols = [MOFA_DEFS.FACTOR_NAME] + sort_cols
@@ -834,7 +832,7 @@ def summarize_factor_regression(
         if col in summary_df.columns:
             summary_df[col] = summary_df[col].map("{:.3f}".format)
 
-    for col in [TIDY_DEFS.P_VALUE, TIDY_DEFS.Q_VALUE]:
+    for col in [TIDY_DEFS.P_VALUE, STATISTICS_DEFS.Q_VALUE]:
         if col in summary_df.columns:
             summary_df[col] = summary_df[col].map("{:.2e}".format)
 
