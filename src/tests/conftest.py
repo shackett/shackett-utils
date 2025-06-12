@@ -60,6 +60,18 @@ def ignore_all_warnings():
             category=UserWarning,
         )
 
+        # transformation warnings
+        warnings.filterwarnings(
+            "ignore",
+            message="invalid value encountered in divide",
+            category=RuntimeWarning,
+        )
+        warnings.filterwarnings(
+            "ignore",
+            message="divide by zero encountered in divide",
+            category=RuntimeWarning,
+        )
+
         yield
 
 

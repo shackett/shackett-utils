@@ -7,7 +7,6 @@ import pandas as pd
 from scipy.stats import kstest, boxcox
 from sklearn.preprocessing import PowerTransformer
 
-
 def _is_valid_transform(transformed_values: np.ndarray) -> bool:
     """
     Check if transformed values are reasonable.
