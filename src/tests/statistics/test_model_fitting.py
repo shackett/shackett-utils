@@ -141,11 +141,56 @@ def test_gam_tidy(test_data):
     assert len(tidy_df) == 2  # 2 predictors
     assert "term" in tidy_df.columns
     assert "type" in tidy_df.columns
+    assert "std_error" in tidy_df.columns
+    assert "statistic" in tidy_df.columns
 
     # Check that x1 is linear and x2 is smooth
     term_types = dict(zip(tidy_df["term"], tidy_df["type"]))
     assert term_types["x1"] == "linear"
     assert term_types["s(x2)"] == "smooth"
+
+    # Check that linear terms have real statistics but smooth terms have NaN
+    x1_row = tidy_df[tidy_df["term"] == "x1"].iloc[0]
+    s_x2_row = tidy_df[tidy_df["term"] == "s(x2)"].iloc[0]
+
+    # Linear term should have real values for estimate, std_error, statistic
+    assert not np.isnan(x1_row["estimate"])
+    assert not np.isnan(x1_row["std_error"])
+    assert not np.isnan(x1_row["statistic"])
+
+    # Smooth term should have NaN for estimate, std_error, statistic, p_value
+    assert np.isnan(s_x2_row["estimate"])
+    assert np.isnan(s_x2_row["std_error"])
+    assert np.isnan(s_x2_row["statistic"])
+    assert np.isnan(s_x2_row["p_value"])
+
+
+def test_gam_smooth_only(test_data):
+    """Test GAM with only smooth terms (no linear terms)"""
+    # Test with multiple smooth terms
+    model2 = model_fitting.fit_model("y ~ s(x1) + s(x2)", data=test_data, method="gam")
+    assert model2.fitted_model is not None
+    assert set(model2.smooth_terms) == {"x1", "x2"}
+    assert len(model2.term_names) == 2
+
+    # Test tidy output
+    tidy_df = model2.tidy()
+    assert isinstance(tidy_df, pd.DataFrame)
+    assert len(tidy_df) == 2  # 2 predictors
+    assert all(
+        row["type"] == "smooth" for _, row in tidy_df.iterrows()
+    )  # all terms should be smooth
+    assert all(
+        "s(" in term for term in tidy_df["term"]
+    )  # all terms should have s() wrapper
+
+    # All smooth terms should have NaN for estimate, std_error, statistic, p_value
+    for _, row in tidy_df.iterrows():
+        assert np.isnan(row["estimate"])
+        assert np.isnan(row["std_error"])
+        assert np.isnan(row["statistic"])
+        assert np.isnan(row["p_value"])
+        assert not np.isnan(row["edf"])  # edf should be real
 
 
 def test_gam_glance(test_data):
@@ -434,29 +479,3 @@ def test_model_identifiers():
         STATISTICS_DEFS.TERM,
         STATISTICS_DEFS.FEATURE_NAME,
     ]
-
-
-def test_gam_smooth_only(test_data):
-    """Test GAM with only smooth terms (no linear terms)"""
-    # Test with single smooth term
-    model = model_fitting.fit_model("y ~ s(x1)", data=test_data, method="gam")
-    assert model.fitted_model is not None
-    assert model.smooth_terms == ["x1"]
-    assert len(model.term_names) == 1
-
-    # Test with multiple smooth terms
-    model2 = model_fitting.fit_model("y ~ s(x1) + s(x2)", data=test_data, method="gam")
-    assert model2.fitted_model is not None
-    assert set(model2.smooth_terms) == {"x1", "x2"}
-    assert len(model2.term_names) == 2
-
-    # Test tidy output
-    tidy_df = model2.tidy()
-    assert isinstance(tidy_df, pd.DataFrame)
-    assert len(tidy_df) == 2  # 2 predictors
-    assert all(
-        row["type"] == "smooth" for _, row in tidy_df.iterrows()
-    )  # all terms should be smooth
-    assert all(
-        "s(" in term for term in tidy_df["term"]
-    )  # all terms should have s() wrapper
