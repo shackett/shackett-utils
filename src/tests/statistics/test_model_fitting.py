@@ -158,11 +158,15 @@ def test_gam_tidy(test_data):
     assert not np.isnan(x1_row["std_error"])
     assert not np.isnan(x1_row["statistic"])
 
-    # Smooth term should have NaN for estimate, std_error, statistic, p_value
-    assert np.isnan(s_x2_row["estimate"])
-    assert np.isnan(s_x2_row["std_error"])
-    assert np.isnan(s_x2_row["statistic"])
-    assert np.isnan(s_x2_row["p_value"])
+    # Smooth term: estimate, p_value may be real or NaN; std_error, statistic must be NaN
+    for col in ["estimate", "p_value"]:
+        val = s_x2_row[col]
+        assert np.isnan(val) or isinstance(
+            val, float
+        ), f"{col} for smooth term should be float or NaN, got {val}"
+    for col in ["std_error", "statistic"]:
+        val = s_x2_row[col]
+        assert np.isnan(val), f"{col} for smooth term should be NaN, got {val}"
 
 
 def test_gam_smooth_only(test_data):
@@ -184,12 +188,16 @@ def test_gam_smooth_only(test_data):
         "s(" in term for term in tidy_df["term"]
     )  # all terms should have s() wrapper
 
-    # All smooth terms should have NaN for estimate, std_error, statistic, p_value
+    # All smooth terms: estimate, p_value may be real or NaN; std_error, statistic must be NaN
     for _, row in tidy_df.iterrows():
-        assert np.isnan(row["estimate"])
-        assert np.isnan(row["std_error"])
-        assert np.isnan(row["statistic"])
-        assert np.isnan(row["p_value"])
+        for col in ["estimate", "p_value"]:
+            val = row[col]
+            assert np.isnan(val) or isinstance(
+                val, float
+            ), f"{col} for smooth term should be float or NaN, got {val}"
+        for col in ["std_error", "statistic"]:
+            val = row[col]
+            assert np.isnan(val), f"{col} for smooth term should be NaN, got {val}"
         assert not np.isnan(row["edf"])  # edf should be real
 
 

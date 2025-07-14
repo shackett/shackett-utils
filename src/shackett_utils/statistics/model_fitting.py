@@ -492,10 +492,14 @@ class GAMModel(StatisticalModel):
                     {
                         "term": f"s({feature_name})",
                         "type": "smooth",
-                        "estimate": np.nan,  # No single coefficient for smooth terms
+                        "estimate": (
+                            np.float64(estimate) if estimate is not None else np.nan
+                        ),
                         "std_error": np.nan,  # No single standard error for smooth terms
                         "statistic": np.nan,  # No reliable test statistic for smooth terms
-                        "p_value": np.nan,  # pygam warns these are unreliable
+                        "p_value": (
+                            np.float64(p_value) if p_value is not None else np.nan
+                        ),  # pygam warns these are unreliable
                         "edf": np.float64(edf) if edf is not None else np.nan,
                     }
                 )
