@@ -449,74 +449,84 @@ class GAMModel(StatisticalModel):
             raise ValueError("Model must be fitted first")
 
         model = self.fitted_model
+
+        # Extract statistical information from model
+        coef = model.coef_ if hasattr(model, "coef_") else None
+        statistics = model.statistics_ if hasattr(model, "statistics_") else {}
+        se = statistics.get("se", None)
+        p_values = statistics.get("p_values", None)
+        edof_per_coef = statistics.get("edof_per_coef", None)
+
         terms_info = []
 
         # For each feature, get information
         for i, feature_name in enumerate(self.term_names):
             is_smooth = feature_name in self.smooth_terms
 
-            if is_smooth:
-                # For smooth terms, get effective degrees of freedom
-                try:
-                    edf = (
-                        model.statistics_["edof_per_coef"][i]
-                        if hasattr(model, "statistics_")
-                        else None
-                    )
-                    estimate = None  # Smooth terms don't have single coefficients
-                    p_value = (
-                        model.statistics_["p_values"][i]
-                        if hasattr(model, "statistics_")
-                        else None
-                    )
-                except (KeyError, IndexError, AttributeError):
-                    edf = None
-                    estimate = None
-                    p_value = None
+            # Get coefficient-level statistics
+            estimate = (
+                np.float64(coef[i]) if coef is not None and i < len(coef) else None
+            )
+            std_error = np.float64(se[i]) if se is not None and i < len(se) else None
+            edf = (
+                np.float64(edof_per_coef[i])
+                if edof_per_coef is not None and i < len(edof_per_coef)
+                else None
+            )
 
+            # Handle p-values (note: pygam warns these may be unreliable)
+            p_value = None
+            if p_values is not None:
+                if is_smooth and len(p_values) > 0:
+                    p_value = np.float64(
+                        p_values[0]
+                    )  # First p-value typically for smooth terms
+                elif not is_smooth and len(p_values) > 1:
+                    p_value = np.float64(
+                        p_values[1]
+                    )  # Second p-value typically for intercept/linear
+
+            if is_smooth:
+                # Smooth terms: estimate and std_error not meaningful, no reliable test statistic
                 terms_info.append(
                     {
                         "term": f"s({feature_name})",
                         "type": "smooth",
+                        "estimate": np.nan,  # No single coefficient for smooth terms
+                        "std_error": np.nan,  # No single standard error for smooth terms
+                        "statistic": np.nan,  # No reliable test statistic for smooth terms
+                        "p_value": np.nan,  # pygam warns these are unreliable
                         "edf": np.float64(edf) if edf is not None else np.nan,
-                        "estimate": (
-                            np.float64(estimate) if estimate is not None else np.nan
-                        ),
-                        "p_value": (
-                            np.float64(p_value) if p_value is not None else np.nan
-                        ),
-                        "std_error": np.nan,  # Smooth terms don't have standard errors in the same way
                     }
                 )
             else:
-                # For linear terms, get coefficient and p-value
-                try:
-                    coef = model.coef_[i] if hasattr(model, "coef_") else None
-                    p_value = (
-                        model.statistics_["p_values"][i]
-                        if hasattr(model, "statistics_")
-                        else None
-                    )
-                except (IndexError, AttributeError, KeyError):
-                    coef = None
-                    p_value = None
+                # Linear terms: standard t-statistic or z-statistic
+                if estimate is not None and std_error is not None and std_error != 0:
+                    statistic = estimate / std_error
+                else:
+                    statistic = None
 
                 terms_info.append(
                     {
                         "term": feature_name,
                         "type": "linear",
-                        "estimate": np.float64(coef) if coef is not None else np.nan,
-                        "edf": np.float64(1.0),  # Linear terms have 1 degree of freedom
+                        "estimate": (
+                            np.float64(estimate) if estimate is not None else np.nan
+                        ),
+                        "std_error": (
+                            np.float64(std_error) if std_error is not None else np.nan
+                        ),
+                        "statistic": (
+                            np.float64(statistic) if statistic is not None else np.nan
+                        ),
                         "p_value": (
                             np.float64(p_value) if p_value is not None else np.nan
                         ),
-                        "std_error": np.nan,  # GAM doesn't provide standard errors in the same way as OLS
+                        "edf": np.float64(edf) if edf is not None else np.nan,
                     }
                 )
 
         tidy_df = pd.DataFrame(terms_info)
-
-        # Add feature name if present
         tidy_df = self._add_identifiers(tidy_df)
 
         return tidy_df
