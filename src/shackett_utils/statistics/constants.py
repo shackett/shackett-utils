@@ -75,6 +75,19 @@ REQUIRED_AUGMENT_VARS = [
     AUGMENT_DEFS.RESIDUAL,
 ]
 
+# hyothesis testing
+
+HYPOTHESIS_TESTING_DEFS = SimpleNamespace(
+    TWO_TAILED="two-tailed",
+    ONE_TAILED_UPPER="one-tailed-upper",
+    ONE_TAILED_LOWER="one-tailed-lower",
+)
+
+HYPOTHESIS_TESTING_TYPES = []
+
+
+# FDR control
+
 MULTITEST_GROUPING_VARS = [
     STATISTICS_DEFS.TERM,
     STATISTICS_DEFS.MODEL_NAME,

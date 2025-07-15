@@ -15,7 +15,7 @@ def test_data():
     data = pd.DataFrame(
         {
             "y": np.random.normal(5, 1, n),
-            "x1": np.random.normal(0, 1, n),
+            "x1": np.random.normal(0, 0.2, n),
             "x2": np.random.uniform(0, 5, n),
         }
     )
@@ -73,6 +73,10 @@ def test_ols_tidy(test_data):
     # Validate tidy DataFrame format
     _validate_tidy_df(tidy_df)
     assert len(tidy_df) == 3  # Intercept + 2 predictors
+
+    # validate that log p-values are properly calculated
+    for i, row in tidy_df.iterrows():
+        assert np.isclose(row["log10_p_value"], np.log10(row["p_value"]))
 
 
 def test_ols_glance(test_data):
@@ -168,6 +172,9 @@ def test_gam_tidy(test_data):
     for col in ["estimate", "std_error", "statistic"]:
         val = s_x2_row[col]
         assert np.isnan(val), f"{col} for smooth term should be NaN, got {val}"
+
+    # validate that log p-values are properly calculated
+    assert np.isclose(x1_row["log10_p_value"], np.log10(x1_row["p_value"]))
 
 
 def test_gam_smooth_only(test_data):

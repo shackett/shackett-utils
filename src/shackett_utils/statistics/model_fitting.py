@@ -1,4 +1,7 @@
+from abc import ABC, abstractmethod
+from typing import Optional, Dict
 import logging
+
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
@@ -6,9 +9,14 @@ import statsmodels.formula.api as smf
 from pygam import LinearGAM, LogisticGAM, PoissonGAM, GammaGAM
 from pygam.terms import TermList, l, s
 
-from abc import ABC, abstractmethod
-from typing import Optional, Dict
-from .constants import REQUIRED_TIDY_VARS, STATISTICS_DEFS, TIDY_DEFS, GLANCE_DEFS
+from shackett_utils.statistics import hypothesis_testing
+from shackett_utils.statistics.constants import (
+    REQUIRED_TIDY_VARS,
+    STATISTICS_DEFS,
+    TIDY_DEFS,
+    GLANCE_DEFS,
+    HYPOTHESIS_TESTING_DEFS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +221,13 @@ class OLSModel(StatisticalModel):
         else:
             terms = self.term_names
 
+        log10_p_values = hypothesis_testing.calculate_log_tstat_pvalue(
+            self.fitted_model.tvalues,
+            self.fitted_model.df_resid,
+            log_base=10,
+            test_type=HYPOTHESIS_TESTING_DEFS.TWO_TAILED,
+        )
+
         # Ensure all numeric values are float64
         tidy_df = pd.DataFrame(
             {
@@ -221,6 +236,7 @@ class OLSModel(StatisticalModel):
                 "std_error": np.asarray(self.fitted_model.bse, dtype=np.float64),
                 "statistic": np.asarray(self.fitted_model.tvalues, dtype=np.float64),
                 "p_value": np.asarray(self.fitted_model.pvalues, dtype=np.float64),
+                "log10_p_value": log10_p_values,
                 "conf_low": np.asarray(
                     (
                         conf_int[:, 0]
@@ -469,7 +485,7 @@ class GAMModel(StatisticalModel):
         terms_info = []
 
         # For each feature, get information
-        for i, term in enumerate(model.terms):
+        for i, _ in enumerate(model.terms):
 
             idx = model.terms.get_coef_indices(i)
 
@@ -490,15 +506,25 @@ class GAMModel(StatisticalModel):
                 estimate = np.nan
                 se = np.nan
                 statistic = np.nan
+                log10_p_value = np.nan
 
             else:
                 type = "linear"
                 edf = 1.0
                 estimate = model.coef_[idx[0]]
                 se = model.statistics_["se"][idx[0]]
+
+                residual_df = model.statistics_["n_samples"] - model.statistics_["edof"]
                 # did some spot checking and it looks like the p-values
                 # were calculated against a t-distribution
                 statistic = estimate / se
+
+                log10_p_value = hypothesis_testing.calculate_log_tstat_pvalue(
+                    statistic,
+                    residual_df,
+                    log_base=10,
+                    test_type=HYPOTHESIS_TESTING_DEFS.TWO_TAILED,
+                )
 
             terms_info.append(
                 {
@@ -509,6 +535,7 @@ class GAMModel(StatisticalModel):
                     "statistic": statistic,
                     "std_error": se,
                     "p_value": model.statistics_["p_values"][i],
+                    "log10_p_value": log10_p_value,
                 }
             )
 
