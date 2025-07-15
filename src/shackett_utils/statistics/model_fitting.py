@@ -482,20 +482,18 @@ class GAMModel(StatisticalModel):
             else:
                 term_name = term_names[i]
                 is_smooth = term_name in self.smooth_terms
-                if is_smooth:
-                    term_name = f"s({term_name})"
 
             if is_smooth:
                 type = "smooth"
                 # sum coef-level dofs
-                edof = np.round(model.statistics_["edof_per_coef"][idx].sum(), 1)
-                estimate = (np.nan,)
-                se = (np.nan,)
-                statistic = (np.nan,)
+                edf = np.round(model.statistics_["edof_per_coef"][idx].sum(), 1)
+                estimate = np.nan
+                se = np.nan
+                statistic = np.nan
 
             else:
                 type = "linear"
-                edof = 1.0
+                edf = 1.0
                 estimate = model.coef_[idx[0]]
                 se = model.statistics_["se"][idx[0]]
                 # did some spot checking and it looks like the p-values
@@ -507,7 +505,7 @@ class GAMModel(StatisticalModel):
                     "term": term_name,
                     "type": type,
                     "estimate": estimate,
-                    "edf": edof,  # Linear terms have 1 degree of freedom
+                    "edf": edf,  # Linear terms have 1 degree of freedom
                     "statistic": statistic,
                     "std_error": se,
                     "p_value": model.statistics_["p_values"][i],

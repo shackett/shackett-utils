@@ -147,11 +147,11 @@ def test_gam_tidy(test_data):
     # Check that x1 is linear and x2 is smooth
     term_types = dict(zip(tidy_df["term"], tidy_df["type"]))
     assert term_types["x1"] == "linear"
-    assert term_types["s(x2)"] == "smooth"
+    assert term_types["x2"] == "smooth"
 
     # Check that linear terms have real statistics but smooth terms have NaN
     x1_row = tidy_df[tidy_df["term"] == "x1"].iloc[0]
-    s_x2_row = tidy_df[tidy_df["term"] == "s(x2)"].iloc[0]
+    s_x2_row = tidy_df[tidy_df["term"] == "x2"].iloc[0]
 
     # Linear term should have real values for estimate, std_error, statistic
     assert isinstance(x1_row["estimate"], float)
@@ -176,20 +176,20 @@ def test_gam_smooth_only(test_data):
     model2 = model_fitting.fit_model(
         "y ~ s(x1) + s(x2) + 0", data=test_data, method="gam"
     )
+    FITTED_TERMS = {"x1", "x2"}  # explicitly no intercept
+
     assert model2.fitted_model is not None
-    assert set(model2.smooth_terms) == {"x1", "x2"}
-    assert len(model2.term_names) == 2
+    assert set(model2.smooth_terms) == FITTED_TERMS
+    assert len(model2.term_names) == len(FITTED_TERMS)
 
     # Test tidy output
     tidy_df = model2.tidy()
     assert isinstance(tidy_df, pd.DataFrame)
-    assert len(tidy_df) == 2  # 2 predictors
+    assert len(tidy_df) == len(FITTED_TERMS)
     assert all(
         row["type"] == "smooth" for _, row in tidy_df.iterrows()
     )  # all terms should be smooth
-    assert all(
-        "s(" in term for term in tidy_df["term"]
-    )  # all terms should have s() wrapper
+    assert set(tidy_df["term"]) == FITTED_TERMS
 
     # All smooth terms: estimate, p_value may be real or NaN; std_error, statistic must be NaN
     assert isinstance(tidy_df["p_value"].iloc[0], float)
