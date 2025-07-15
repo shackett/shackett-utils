@@ -347,7 +347,6 @@ class GAMModel(StatisticalModel):
 
         terms = []
         for i, var in enumerate(x_vars):
-            print(f"i: {i}, var: {var}")
             if var in smooth_terms:
                 logger.debug(f"Adding smooth term s({i}) for variable '{var}'")
                 terms.append(s(i))
