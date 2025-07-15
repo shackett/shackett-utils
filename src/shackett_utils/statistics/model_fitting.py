@@ -3,7 +3,9 @@ import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
-from pygam import LinearGAM
+from pygam import LinearGAM, LogisticGAM, PoissonGAM, GammaGAM
+from pygam.terms import TermList, l, s
+
 from abc import ABC, abstractmethod
 from typing import Optional, Dict
 from .constants import REQUIRED_TIDY_VARS, STATISTICS_DEFS, TIDY_DEFS, GLANCE_DEFS
@@ -297,6 +299,7 @@ class GAMModel(StatisticalModel):
             - y_var: name of response variable from formula
             - x_vars: list of predictor variable names
             - smooth_terms: list of variables that should be smoothed
+            - fit_intercept: boolean indicating whether to fit an intercept term
         """
         parts = formula.split("~")
         if len(parts) != 2:
@@ -310,6 +313,15 @@ class GAMModel(StatisticalModel):
         # Parse predictor terms
         x_part = parts[1].strip()
         raw_terms = [term.strip() for term in x_part.split("+")]
+
+        # look for an explicit intercept/non-intercept terms
+        if "0" in raw_terms:
+            fit_intercept = False
+            raw_terms = [term for term in raw_terms if term != "0"]
+        else:
+            fit_intercept = True
+            if "1" in raw_terms:
+                raw_terms = [term for term in raw_terms if term != "1"]
 
         x_vars = []
         smooth_terms = []
@@ -326,16 +338,16 @@ class GAMModel(StatisticalModel):
                 x_vars.append(term)
 
         logger.debug(
-            f"Parsed formula '{formula}': response='{y_var}', predictors={x_vars}, smooth_terms={smooth_terms}"
+            f"Parsed formula '{formula}': response='{y_var}', predictors={x_vars}, smooth_terms={smooth_terms}, fit_intercept={fit_intercept}"
         )
-        return y_var, x_vars, smooth_terms
+        return y_var, x_vars, smooth_terms, fit_intercept
 
     def _build_gam_terms(self, x_vars: list, smooth_terms: list) -> list:
         """Build GAM terms list for model fitting"""
-        from pygam.terms import TermList, l, s
 
         terms = []
         for i, var in enumerate(x_vars):
+            print(f"i: {i}, var: {var}")
             if var in smooth_terms:
                 logger.debug(f"Adding smooth term s({i}) for variable '{var}'")
                 terms.append(s(i))
@@ -366,7 +378,6 @@ class GAMModel(StatisticalModel):
         self : GAMModel
             Fitted model
         """
-        from pygam import LogisticGAM, PoissonGAM, GammaGAM
 
         # Map family names to GAM classes
         family_map = {
@@ -387,7 +398,7 @@ class GAMModel(StatisticalModel):
         self.family = family
 
         # Parse formula
-        y_var, x_vars, smooth_terms = self._parse_formula(formula)
+        y_var, x_vars, smooth_terms, fit_intercept = self._parse_formula(formula)
         self.term_names = x_vars
         self.smooth_terms = smooth_terms
 
@@ -420,6 +431,13 @@ class GAMModel(StatisticalModel):
         # Build GAM terms
         terms = self._build_gam_terms(x_vars, smooth_terms)
 
+        # update kwargs with fit_intercept from formula
+        if "fit_intercept" in kwargs:
+            logger.warning(
+                "fit_intercept specified in kwargs, but will be overridden by formula"
+            )
+        kwargs["fit_intercept"] = fit_intercept
+
         try:
             # Use the appropriate GAM class for the family
             GAMClass = family_map[family]
@@ -449,88 +467,57 @@ class GAMModel(StatisticalModel):
             raise ValueError("Model must be fitted first")
 
         model = self.fitted_model
-
-        # Extract statistical information from model
-        coef = model.coef_ if hasattr(model, "coef_") else None
-        statistics = model.statistics_ if hasattr(model, "statistics_") else {}
-        se = statistics.get("se", None)
-        p_values = statistics.get("p_values", None)
-        edof_per_coef = statistics.get("edof_per_coef", None)
-
         terms_info = []
 
         # For each feature, get information
-        for i, feature_name in enumerate(self.term_names):
-            is_smooth = feature_name in self.smooth_terms
+        for i, term in enumerate(model.terms):
 
-            # Get coefficient-level statistics
-            estimate = (
-                np.float64(coef[i]) if coef is not None and i < len(coef) else None
-            )
-            std_error = np.float64(se[i]) if se is not None and i < len(se) else None
-            edf = (
-                np.float64(edof_per_coef[i])
-                if edof_per_coef is not None and i < len(edof_per_coef)
-                else None
-            )
+            idx = model.terms.get_coef_indices(i)
 
-            # Handle p-values (note: pygam warns these may be unreliable)
-            p_value = None
-            if p_values is not None:
-                if is_smooth and len(p_values) > 0:
-                    p_value = np.float64(
-                        p_values[0]
-                    )  # First p-value typically for smooth terms
-                elif not is_smooth and len(p_values) > 1:
-                    p_value = np.float64(
-                        p_values[1]
-                    )  # Second p-value typically for intercept/linear
+            # always defined
+
+            term_names = self.term_names
+            if i == (len(term_names)):
+                term_name = "intercept"
+                is_smooth = False
+            else:
+                term_name = term_names[i]
+                is_smooth = term_name in self.smooth_terms
+                if is_smooth:
+                    term_name = f"s({term_name})"
 
             if is_smooth:
-                # Smooth terms: estimate and std_error not meaningful, no reliable test statistic
-                terms_info.append(
-                    {
-                        "term": f"s({feature_name})",
-                        "type": "smooth",
-                        "estimate": (
-                            np.float64(estimate) if estimate is not None else np.nan
-                        ),
-                        "std_error": np.nan,  # No single standard error for smooth terms
-                        "statistic": np.nan,  # No reliable test statistic for smooth terms
-                        "p_value": (
-                            np.float64(p_value) if p_value is not None else np.nan
-                        ),  # pygam warns these are unreliable
-                        "edf": np.float64(edf) if edf is not None else np.nan,
-                    }
-                )
-            else:
-                # Linear terms: standard t-statistic or z-statistic
-                if estimate is not None and std_error is not None and std_error != 0:
-                    statistic = estimate / std_error
-                else:
-                    statistic = None
+                type = "smooth"
+                # sum coef-level dofs
+                edof = np.round(model.statistics_["edof_per_coef"][idx].sum(), 1)
+                estimate = (np.nan,)
+                se = (np.nan,)
+                statistic = (np.nan,)
 
-                terms_info.append(
-                    {
-                        "term": feature_name,
-                        "type": "linear",
-                        "estimate": (
-                            np.float64(estimate) if estimate is not None else np.nan
-                        ),
-                        "std_error": (
-                            np.float64(std_error) if std_error is not None else np.nan
-                        ),
-                        "statistic": (
-                            np.float64(statistic) if statistic is not None else np.nan
-                        ),
-                        "p_value": (
-                            np.float64(p_value) if p_value is not None else np.nan
-                        ),
-                        "edf": np.float64(edf) if edf is not None else np.nan,
-                    }
-                )
+            else:
+                type = "linear"
+                edof = 1.0
+                estimate = model.coef_[idx[0]]
+                se = model.statistics_["se"][idx[0]]
+                # did some spot checking and it looks like the p-values
+                # were calculated against a t-distribution
+                statistic = estimate / se
+
+            terms_info.append(
+                {
+                    "term": term_name,
+                    "type": type,
+                    "estimate": estimate,
+                    "edf": edof,  # Linear terms have 1 degree of freedom
+                    "statistic": statistic,
+                    "std_error": se,
+                    "p_value": model.statistics_["p_values"][i],
+                }
+            )
 
         tidy_df = pd.DataFrame(terms_info)
+
+        # Add feature name if present
         tidy_df = self._add_identifiers(tidy_df)
 
         return tidy_df

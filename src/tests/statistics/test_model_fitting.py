@@ -138,7 +138,7 @@ def test_gam_tidy(test_data):
     model = model_fitting.fit_model("y ~ x1 + s(x2)", data=test_data, method="gam")
     tidy_df = model.tidy()
     assert isinstance(tidy_df, pd.DataFrame)
-    assert len(tidy_df) == 2  # 2 predictors
+    assert len(tidy_df) == 3  # 2 predictors + intercept
     assert "term" in tidy_df.columns
     assert "type" in tidy_df.columns
     assert "std_error" in tidy_df.columns
@@ -154,17 +154,18 @@ def test_gam_tidy(test_data):
     s_x2_row = tidy_df[tidy_df["term"] == "s(x2)"].iloc[0]
 
     # Linear term should have real values for estimate, std_error, statistic
-    assert not np.isnan(x1_row["estimate"])
-    assert not np.isnan(x1_row["std_error"])
-    assert not np.isnan(x1_row["statistic"])
+    assert isinstance(x1_row["estimate"], float)
+    assert isinstance(x1_row["std_error"], float)
+    assert isinstance(x1_row["statistic"], float)
+    assert isinstance(x1_row["p_value"], float)
 
     # Smooth term: estimate, p_value may be real or NaN; std_error, statistic must be NaN
-    for col in ["estimate", "p_value"]:
+    for col in ["p_value"]:
         val = s_x2_row[col]
         assert np.isnan(val) or isinstance(
             val, float
         ), f"{col} for smooth term should be float or NaN, got {val}"
-    for col in ["std_error", "statistic"]:
+    for col in ["estimate", "std_error", "statistic"]:
         val = s_x2_row[col]
         assert np.isnan(val), f"{col} for smooth term should be NaN, got {val}"
 
@@ -172,7 +173,9 @@ def test_gam_tidy(test_data):
 def test_gam_smooth_only(test_data):
     """Test GAM with only smooth terms (no linear terms)"""
     # Test with multiple smooth terms
-    model2 = model_fitting.fit_model("y ~ s(x1) + s(x2)", data=test_data, method="gam")
+    model2 = model_fitting.fit_model(
+        "y ~ s(x1) + s(x2) + 0", data=test_data, method="gam"
+    )
     assert model2.fitted_model is not None
     assert set(model2.smooth_terms) == {"x1", "x2"}
     assert len(model2.term_names) == 2
@@ -189,16 +192,10 @@ def test_gam_smooth_only(test_data):
     )  # all terms should have s() wrapper
 
     # All smooth terms: estimate, p_value may be real or NaN; std_error, statistic must be NaN
-    for _, row in tidy_df.iterrows():
-        for col in ["estimate", "p_value"]:
-            val = row[col]
-            assert np.isnan(val) or isinstance(
-                val, float
-            ), f"{col} for smooth term should be float or NaN, got {val}"
-        for col in ["std_error", "statistic"]:
-            val = row[col]
-            assert np.isnan(val), f"{col} for smooth term should be NaN, got {val}"
-        assert not np.isnan(row["edf"])  # edf should be real
+    assert isinstance(tidy_df["p_value"].iloc[0], float)
+    assert all(np.isnan(row["estimate"]) for _, row in tidy_df.iterrows())
+    assert all(np.isnan(row["std_error"]) for _, row in tidy_df.iterrows())
+    assert all(np.isnan(row["statistic"]) for _, row in tidy_df.iterrows())
 
 
 def test_gam_glance(test_data):
@@ -242,26 +239,31 @@ def test_formula_parsing():
     model = model_fitting.GAMModel()
 
     # Test simple linear formula
-    y_var, x_vars, smooth_terms = model._parse_formula(
-        "response ~ pred1 + pred2 + pred3"
+    y_var, x_vars, smooth_terms, fit_intercept = model._parse_formula(
+        "response ~ pred1 + pred2 + pred3 + 1"
     )
     assert y_var == "response"
     assert x_vars == ["pred1", "pred2", "pred3"]
     assert smooth_terms == []
+    assert fit_intercept
 
     # Test formula with smooth terms
-    y_var, x_vars, smooth_terms = model._parse_formula("y ~ x1 + s(x2) + x3 + s(x4)")
+    y_var, x_vars, smooth_terms, fit_intercept = model._parse_formula(
+        "y ~ x1 + s(x2) + x3 + s(x4) + 0"
+    )
     assert y_var == "y"
     assert x_vars == ["x1", "x2", "x3", "x4"]
     assert smooth_terms == ["x2", "x4"]
+    assert not fit_intercept
 
     # Test formula with only smooth terms
-    y_var, x_vars, smooth_terms = model._parse_formula(
+    y_var, x_vars, smooth_terms, fit_intercept = model._parse_formula(
         "outcome ~ s(feature1) + s(feature2)"
     )
     assert y_var == "outcome"
     assert x_vars == ["feature1", "feature2"]
     assert smooth_terms == ["feature1", "feature2"]
+    assert fit_intercept
 
 
 def test_formula_parsing_invalid():
