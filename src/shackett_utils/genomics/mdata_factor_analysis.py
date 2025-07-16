@@ -814,6 +814,8 @@ def summarize_factor_regression(
 
     # Sort by p-value/q-value and grouping variable
     sort_cols = []
+    if TIDY_DEFS.LOG10_P_VALUE in summary_df.columns:
+        sort_cols.append(TIDY_DEFS.LOG10_P_VALUE)
     if TIDY_DEFS.P_VALUE in summary_df.columns:
         sort_cols.append(TIDY_DEFS.P_VALUE)
     if STATISTICS_DEFS.Q_VALUE in summary_df.columns:
@@ -826,7 +828,7 @@ def summarize_factor_regression(
     summary_df = summary_df.sort_values(sort_cols, ascending=True)
 
     # Format numeric columns (after sorting)
-    for col in [TIDY_DEFS.ESTIMATE, TIDY_DEFS.STD_ERROR]:
+    for col in [TIDY_DEFS.ESTIMATE, TIDY_DEFS.STD_ERROR, TIDY_DEFS.LOG10_P_VALUE]:
         if col in summary_df.columns:
             summary_df[col] = summary_df[col].map("{:.3f}".format)
 

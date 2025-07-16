@@ -11,9 +11,9 @@ from anndata import AnnData
 
 from shackett_utils.genomics import adata_utils
 from shackett_utils.statistics import multi_model_fitting
+from shackett_utils.statistics.utils import get_stat_abbreviation
 from shackett_utils.statistics.constants import STATISTICS_DEFS, TIDY_DEFS
 from shackett_utils.genomics.constants import REGRESSION_DEFAULT_STATS
-from shackett_utils.statistics.constants import STATISTICS_ABBREVIATIONS
 
 
 def adata_model_fitting(
@@ -230,8 +230,9 @@ def _build_term_results(
     # Process each statistic
     for stat in stats_to_add:
         if stat in results.columns:
+
             # Get prefix for column names
-            stat_prefix = STATISTICS_ABBREVIATIONS.get(stat, stat.split("_")[0].lower())
+            stat_prefix = get_stat_abbreviation(stat)
 
             # Pivot the data for this statistic
             stat_df = results.pivot(

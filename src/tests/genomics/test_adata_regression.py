@@ -179,6 +179,7 @@ def test_add_regression_results_to_anndata(minimal_adata):
             TIDY_DEFS.ESTIMATE: [0.5, -0.3, 0.2, 0.4],
             TIDY_DEFS.STD_ERROR: [0.1, 0.1, 0.1, 0.1],
             STATISTICS_DEFS.P_VALUE: [0.01, 0.02, 0.03, 0.04],
+            TIDY_DEFS.LOG10_P_VALUE: [-2, -1.7, -1.5, -1.3],
             STATISTICS_DEFS.Q_VALUE: [0.02, 0.03, 0.04, 0.05],
             TIDY_DEFS.STATISTIC: [2.5, -2.0, 1.5, 2.0],
         }
@@ -201,6 +202,8 @@ def test_add_regression_results_to_anndata(minimal_adata):
         "p_condition",  # From STATISTICS_DEFS.P_VALUE
         "q_batch",
         "q_condition",  # From STATISTICS_DEFS.Q_VALUE
+        "log10_p_batch",
+        "log10_p_condition",  # From TIDY_DEFS.LOG10_P_VALUE
         "stat_batch",
         "stat_condition",  # From TIDY_DEFS.STATISTIC
         "stderr_batch",

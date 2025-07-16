@@ -9,6 +9,7 @@ from shackett_utils.statistics.constants import TIDY_DEFS, STATISTICS_DEFS
 REGRESSION_DEFAULT_STATS: List[str] = [
     TIDY_DEFS.ESTIMATE,  # Effect size estimates
     STATISTICS_DEFS.P_VALUE,  # Raw p-values
+    TIDY_DEFS.LOG10_P_VALUE,  # Log10-transformed p-values
     STATISTICS_DEFS.Q_VALUE,  # FDR-corrected p-values
     TIDY_DEFS.STATISTIC,  # T-statistics
     TIDY_DEFS.STD_ERROR,  # Standard errors

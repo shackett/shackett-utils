@@ -10,7 +10,6 @@ import statsmodels.stats.multitest as multitest
 from shackett_utils.statistics.model_fitting import (
     OLSModel,
     GAMModel,
-    _validate_tidy_df,
 )
 from shackett_utils.statistics.constants import (
     STATISTICS_DEFS,
@@ -173,30 +172,13 @@ def fit_feature_model_matrix(
         return _handle_model_error(e, feature_name)
 
 
-def _apply_fdr_correction(df: pd.DataFrame, mask: pd.Series, fdr_method: str) -> None:
-    """
-    Apply FDR correction to a subset of p-values and assign q-values in-place.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        DataFrame containing p-values to correct
-    mask : pd.Series
-        Boolean mask indicating which rows to correct
-    fdr_method : str
-        FDR method to use
-    """
-    p_values = df.loc[mask, STATISTICS_DEFS.P_VALUE].values
-    if len(p_values) > 0:  # Only perform correction if we have p-values
-        df.loc[mask, STATISTICS_DEFS.Q_VALUE] = multitest.multipletests(
-            p_values, method=fdr_method
-        )[1]
-    else:
-        df.loc[mask, STATISTICS_DEFS.Q_VALUE] = np.nan
-
-
 def control_fdr(
-    results_df: pd.DataFrame, fdr_method: str = FDR_METHODS_DEFS.BH
+    results_df: pd.DataFrame,
+    fdr_method: str = FDR_METHODS_DEFS.BH,
+    grouping_vars: Optional[List[str]] = MULTITEST_GROUPING_VARS,
+    require_groups: bool = False,
+    p_value_var: str = STATISTICS_DEFS.P_VALUE,
+    q_value_var: str = STATISTICS_DEFS.Q_VALUE,
 ) -> pd.DataFrame:
     """
     Apply FDR control to p-values, grouping by term and model_name (if present).
@@ -207,6 +189,17 @@ def control_fdr(
         DataFrame with model results. Must be a valid tidy DataFrame with required columns.
     fdr_method : str
         FDR method to use. Must be one of the methods in FDR_METHODS.
+    grouping_vars : Optional[List[str]]
+        Columns to group by for FDR control. Default is MULTITEST_GROUPING_VARS.
+    require_groups : bool
+        Whether all grouping variables must be present in the data. If False, will
+        group which ever of the provided grouping variables are present in the data.
+        If True, will raise an error if any of the grouping variables are not present
+        in the data. Default is False.
+    p_value_var : str
+        Column name for p-values. Default is STATISTICS_DEFS.P_VALUE.
+    q_value_var : str
+        Column name for q-values. Default is STATISTICS_DEFS.Q_VALUE.
 
     Returns
     -------
@@ -218,8 +211,6 @@ def control_fdr(
     ValueError
         If results_df is empty or missing required columns
     """
-    # Validate input DataFrame
-    _validate_tidy_df(results_df)
 
     if fdr_method not in FDR_METHODS:
         raise ValueError(
@@ -227,29 +218,76 @@ def control_fdr(
         )
 
     # Determine grouping columns based on available columns
-    group_cols = [col for col in MULTITEST_GROUPING_VARS if col in results_df.columns]
+    group_cols = [col for col in grouping_vars if col in results_df.columns]
+
+    if require_groups:
+        missing_groups = [col for col in grouping_vars if col not in results_df.columns]
+        if missing_groups:
+            raise ValueError(
+                f"Grouping variables {missing_groups} not found in results_df"
+            )
 
     if len(group_cols) > 1:
         logger.info(f"Applying FDR control within groups: {', '.join(group_cols)}")
         # Apply correction within each group
         for _, group in results_df.groupby(group_cols):
             mask = results_df.index.isin(group.index)
-            _apply_fdr_correction(results_df, mask, fdr_method)
+            _apply_fdr_correction(
+                results_df, mask, fdr_method, p_value_var, q_value_var
+            )
     else:
         if group_cols:
             logger.info(f"Applying FDR control within {group_cols[0]} groups")
             # Use single column without list to avoid pandas warning
             for _, group in results_df.groupby(group_cols[0]):
                 mask = results_df.index.isin(group.index)
-                _apply_fdr_correction(results_df, mask, fdr_method)
+                _apply_fdr_correction(
+                    results_df, mask, fdr_method, p_value_var, q_value_var
+                )
         else:
             logger.info("Applying FDR control globally (no grouping columns found)")
             # Apply correction to all p-values at once
             _apply_fdr_correction(
-                results_df, pd.Series(True, index=results_df.index), fdr_method
+                results_df,
+                pd.Series(True, index=results_df.index),
+                fdr_method,
+                p_value_var,
+                q_value_var,
             )
 
     return results_df
+
+
+def _apply_fdr_correction(
+    df: pd.DataFrame,
+    mask: pd.Series,
+    fdr_method: str,
+    p_value_var: str = STATISTICS_DEFS.P_VALUE,
+    q_value_var: str = STATISTICS_DEFS.Q_VALUE,
+) -> None:
+    """
+    Apply FDR correction to a subset of p-values and assign q-values in-place.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame containing p-values to correct
+    mask : pd.Series
+        Boolean mask indicating which rows to correct
+    fdr_method : str
+        FDR method to use
+    p_value_var : str
+        Column name for p-values
+    q_value_var : str
+        Column name for q-values
+    """
+    p_values = df.loc[mask, p_value_var].values
+    if len(p_values) > 0:  # Only perform correction if we have p-values
+        df.loc[mask, q_value_var] = multitest.multipletests(
+            p_values, method=fdr_method
+        )[1]
+    else:
+        df.loc[mask, q_value_var] = np.nan
 
 
 def _validate_formula(formula: str, data: Optional[pd.DataFrame] = None) -> str:

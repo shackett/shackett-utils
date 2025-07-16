@@ -17,6 +17,7 @@ TIDY_DEFS = SimpleNamespace(
     STD_ERROR="std_error",
     STATISTIC="statistic",
     P_VALUE=STATISTICS_DEFS.P_VALUE,
+    LOG10_P_VALUE="log10_p_value",
     CONF_LOW="conf_low",
     CONF_HIGH="conf_high",
 )
@@ -39,6 +40,7 @@ STATISTICS_ABBREVIATIONS = {
     TIDY_DEFS.STD_ERROR: "stderr",
     STATISTICS_DEFS.P_VALUE: "p",
     STATISTICS_DEFS.Q_VALUE: "q",
+    TIDY_DEFS.LOG10_P_VALUE: "log10_p",
     TIDY_DEFS.STATISTIC: "stat",
     STATISTICS_DEFS.SIGNIFICANCE: "sig",
 }
