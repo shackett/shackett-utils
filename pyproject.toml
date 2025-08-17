@@ -40,7 +40,7 @@ all = [
     "anndata",
     "mudata", 
     "muon",
-    "scanpy",
+    "scanpy<1.11",
     # statistics dependencies
     "scipy<1.13",
     "statsmodels",
