@@ -14,7 +14,7 @@ import seaborn as sns
 
 # Set up the plotting style with a standard matplotlib style
 plt.style.use("default")
-sc.settings.set_figure_params(dpi=100, frameon=True)
+# sc.settings.set_figure_params(dpi=100, frameon=True)
 
 
 def plot_mudata_pca_variance(

@@ -232,12 +232,18 @@ class OLSModel(StatisticalModel):
         tidy_df = pd.DataFrame(
             {
                 "term": terms,
-                "estimate": np.asarray(params, dtype=np.float64),
-                "std_error": np.asarray(self.fitted_model.bse, dtype=np.float64),
-                "statistic": np.asarray(self.fitted_model.tvalues, dtype=np.float64),
-                "p_value": np.asarray(self.fitted_model.pvalues, dtype=np.float64),
-                "log10_p_value": log10_p_values,
-                "conf_low": np.asarray(
+                TIDY_DEFS.ESTIMATE: np.asarray(params, dtype=np.float64),
+                TIDY_DEFS.STD_ERROR: np.asarray(
+                    self.fitted_model.bse, dtype=np.float64
+                ),
+                TIDY_DEFS.STATISTIC: np.asarray(
+                    self.fitted_model.tvalues, dtype=np.float64
+                ),
+                STATISTICS_DEFS.P_VALUE: np.asarray(
+                    self.fitted_model.pvalues, dtype=np.float64
+                ),
+                TIDY_DEFS.LOG10_P_VALUE: log10_p_values,
+                TIDY_DEFS.CONF_LOW: np.asarray(
                     (
                         conf_int[:, 0]
                         if isinstance(conf_int, np.ndarray)
@@ -245,7 +251,7 @@ class OLSModel(StatisticalModel):
                     ),
                     dtype=np.float64,
                 ),
-                "conf_high": np.asarray(
+                TIDY_DEFS.CONF_HIGH: np.asarray(
                     (
                         conf_int[:, 1]
                         if isinstance(conf_int, np.ndarray)
@@ -528,14 +534,14 @@ class GAMModel(StatisticalModel):
 
             terms_info.append(
                 {
-                    "term": term_name,
+                    TIDY_DEFS.TERM: term_name,
                     "type": type,
-                    "estimate": estimate,
+                    TIDY_DEFS.ESTIMATE: estimate,
                     "edf": edf,  # Linear terms have 1 degree of freedom
-                    "statistic": statistic,
-                    "std_error": se,
-                    "p_value": model.statistics_["p_values"][i],
-                    "log10_p_value": log10_p_value,
+                    TIDY_DEFS.STATISTIC: statistic,
+                    TIDY_DEFS.STD_ERROR: se,
+                    STATISTICS_DEFS.P_VALUE: model.statistics_["p_values"][i],
+                    TIDY_DEFS.LOG10_P_VALUE: log10_p_value,
                 }
             )
 
