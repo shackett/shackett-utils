@@ -7,7 +7,6 @@ from IPython.display import display, HTML
 def export_tabulator_payload(
     df: pd.DataFrame,
     layout: str = 'fitColumns',
-    flatten_multiindex: bool = True,
     include_index: bool = True,
     include_columns: bool = True,
 ) -> dict:
@@ -20,11 +19,9 @@ def export_tabulator_payload(
         The input data.
     layout : str, default='fitColumns'
         Layout strategy for Tabulator.
-    flatten_multiindex : bool, default=True
-        Flatten MultiIndex columns into compound strings.
     include_index : bool, default=True
         Whether to include the index in the output.
-    include_columns : bool = True
+    include_columns : bool, default=True
         Whether to include column headers.
     
     Returns
@@ -36,7 +33,7 @@ def export_tabulator_payload(
     column_defs = None
 
     # --- Handle MultiIndex Columns ---
-    if isinstance(df.columns, pd.MultiIndex) and flatten_multiindex:
+    if isinstance(df.columns, pd.MultiIndex):
         flat_cols = ['_'.join(map(str, col)).strip() for col in df.columns.values]
         table_data.columns = flat_cols
 
@@ -56,13 +53,12 @@ def export_tabulator_payload(
         "responsiveLayout": "collapse"
     }
 
-    # --- Handle Index (including flattening MultiIndex index) ---
+    # --- Handle Index ---
     index_columns = []
     if include_index:
         if isinstance(table_data.index, pd.MultiIndex):
             table_data.index = table_data.index.map(lambda x: " / ".join(map(str, x)))
         if table_data.index.name or not table_data.index.equals(pd.RangeIndex(len(table_data))):
-            # Store index column names before resetting
             if table_data.index.name:
                 index_columns = [table_data.index.name]
             else:
@@ -72,10 +68,8 @@ def export_tabulator_payload(
     # --- Update column definitions to include index columns ---
     if include_columns and index_columns:
         if column_defs is None:
-            # If no column definitions exist yet, create them
             column_defs = []
         
-        # Add index column definitions at the beginning
         for col_name in index_columns:
             column_defs.insert(0, {"title": str(col_name), "field": str(col_name)})
 
@@ -87,36 +81,18 @@ def export_tabulator_payload(
         "options": options
     }
 
+
 def display_tabulator(
     df: pd.DataFrame,
     layout: str = "fitColumns",
-    flatten_multiindex: bool = True,
     include_index: bool = True,
     include_columns: bool = True,
-    caption: Optional[str] = None
+    caption: Optional[str] = None,
+    width: Optional[str] = None,
 ) -> None:
-    """
-    Display a DataFrame as an interactive Tabulator table in Quarto.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        The DataFrame to display.
-    layout : str, default='fitColumns'
-        Layout mode for Tabulator ('fitColumns', 'fitData', 'fitDataStretch', etc.).
-    flatten_multiindex : bool, default=True
-        If True, flattens MultiIndex columns using underscores.
-    include_index : bool, default=True
-        If True, includes the index column in the table.
-    include_columns : bool, default=True
-        If False, omits header columns (not typical for Tabulator).
-    caption : str, optional
-        Optional caption text to display above the table.
-    """
     payload = export_tabulator_payload(
         df,
         layout=layout,
-        flatten_multiindex=flatten_multiindex,
         include_index=include_index,
         include_columns=include_columns,
     )
@@ -128,8 +104,11 @@ def display_tabulator(
         </figcaption>
         """))
 
+    # Control width through CSS on the container div
+    container_style = f"width: {width}; display: inline-block;" if width else ""
+
     display(HTML(f"""
-    <div class="data-table"
+    <div class="data-table" style="{container_style}"
         data-table='{json.dumps(payload["table"])}'
         data-columns='{json.dumps(payload["columns"] or [])}'
         data-options='{json.dumps(payload["options"])}'>

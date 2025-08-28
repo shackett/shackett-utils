@@ -174,7 +174,7 @@ class TestExportTabulatorPayload:
         
         df.columns = col_index
         
-        result = export_tabulator_payload(df, flatten_multiindex=True)
+        result = export_tabulator_payload(df)
         
         # Check that MultiIndex columns are flattened
         assert len(result['columns']) == 2  # Two parent columns
@@ -189,8 +189,8 @@ class TestExportTabulatorPayload:
         assert 'Revenue_Q3' in result['table'][0]
         assert 'Revenue_Q4' in result['table'][0]
 
-    def test_multiindex_columns_no_flatten(self):
-        """Test DataFrame with MultiIndex columns without flattening."""
+    def test_multiindex_columns_always_flattened(self):
+        """Test DataFrame with MultiIndex columns - always flattened for HTML compatibility."""
         data = {
             'Q1': [100, 150, 120, 180],
             'Q2': [110, 160, 130, 190],
@@ -208,12 +208,14 @@ class TestExportTabulatorPayload:
         
         df.columns = col_index
         
-        result = export_tabulator_payload(df, flatten_multiindex=False)
+        result = export_tabulator_payload(df)
         
-        # Check that MultiIndex columns are not flattened
-        assert len(result['columns']) == 4  # Four individual columns
-        assert result['columns'][0]['title'] == "('Sales', 'Q1')"
-        assert result['columns'][0]['field'] == "('Sales', 'Q1')"
+        # Check that MultiIndex columns are always flattened
+        assert len(result['columns']) == 2  # Two parent columns
+        assert result['columns'][0]['title'] == 'Sales'
+        assert len(result['columns'][0]['columns']) == 2
+        assert result['columns'][0]['columns'][0]['title'] == 'Q1'
+        assert result['columns'][0]['columns'][0]['field'] == 'Sales_Q1'
 
     def test_both_multiindex(self):
         """Test DataFrame with both row and column MultiIndex."""
@@ -226,7 +228,7 @@ class TestExportTabulatorPayload:
         
         df = pd.DataFrame(complex_data, index=row_idx, columns=col_idx)
         
-        result = export_tabulator_payload(df, include_index=True, flatten_multiindex=True)
+        result = export_tabulator_payload(df, include_index=True)
         
         # Check structure
         assert len(result['table']) == 4
