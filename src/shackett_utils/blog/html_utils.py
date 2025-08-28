@@ -24,7 +24,7 @@ def export_tabulator_payload(
         Flatten MultiIndex columns into compound strings.
     include_index : bool, default=True
         Whether to include the index in the output.
-    include_columns : bool, default=True
+    include_columns : bool = True
         Whether to include column headers.
     
     Returns
@@ -56,12 +56,28 @@ def export_tabulator_payload(
         "responsiveLayout": "collapse"
     }
 
-    # --- Flat Data (including flattening MultiIndex index) ---
+    # --- Handle Index (including flattening MultiIndex index) ---
+    index_columns = []
     if include_index:
         if isinstance(table_data.index, pd.MultiIndex):
             table_data.index = table_data.index.map(lambda x: " / ".join(map(str, x)))
         if table_data.index.name or not table_data.index.equals(pd.RangeIndex(len(table_data))):
+            # Store index column names before resetting
+            if table_data.index.name:
+                index_columns = [table_data.index.name]
+            else:
+                index_columns = ['index']
             table_data = table_data.reset_index()
+
+    # --- Update column definitions to include index columns ---
+    if include_columns and index_columns:
+        if column_defs is None:
+            # If no column definitions exist yet, create them
+            column_defs = []
+        
+        # Add index column definitions at the beginning
+        for col_name in index_columns:
+            column_defs.insert(0, {"title": str(col_name), "field": str(col_name)})
 
     table_records = table_data.to_dict(orient="records")
 
