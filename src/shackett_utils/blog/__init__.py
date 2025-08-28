@@ -1,0 +1,1 @@
+""" Utility functions for my personal blog shackett.org """
