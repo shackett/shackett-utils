@@ -55,3 +55,91 @@ def format_numeric_columns(
         return None
     else:
         return result_df
+
+
+def format_character_columns(
+    df: pd.DataFrame,
+    wrap_length: int = 30,
+    truncate_length: int = 120,
+    inplace: bool = False
+) -> Optional[pd.DataFrame]:
+    """
+    Format character columns by wrapping long strings and truncating very long ones.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The input DataFrame
+    wrap_length : int, default=30
+        Maximum length before wrapping to new lines
+    truncate_length : int, default=120
+        Maximum length before truncating with "..."
+    inplace : bool, default=False
+        If True, modify the original DataFrame. If False, return a copy.
+    
+    Returns
+    -------
+    pd.DataFrame or None
+        Formatted DataFrame if inplace=False, None if inplace=True
+    
+    Examples
+    --------
+    >>> df = pd.DataFrame({
+    ...     'A': ['Short text', 'This is a longer text that will be wrapped', 'Very long text...'],
+    ...     'B': [1, 2, 3]
+    ... })
+    >>> formatted_df = format_character_columns(df, wrap_length=20, truncate_length=50)
+    """
+    if inplace:
+        result_df = df
+    else:
+        result_df = df.copy()
+    
+    def format_string(s):
+        if pd.isna(s) or not isinstance(s, str):
+            return s
+        
+        # Truncate if too long
+        if len(s) > truncate_length:
+            s = s[:truncate_length-3] + "..."
+        
+        # Wrap if longer than wrap_length
+        if len(s) > wrap_length:
+            # Simple word wrapping - break at spaces when possible
+            words = s.split()
+            lines = []
+            current_line = ""
+            
+            for word in words:
+                if len(current_line) + len(word) + 1 <= wrap_length:
+                    if current_line:
+                        current_line += " " + word
+                    else:
+                        current_line = word
+                else:
+                    if current_line:
+                        lines.append(current_line)
+                        current_line = word
+                    else:
+                        # Word itself is longer than wrap_length, break it
+                        lines.append(word[:wrap_length])
+                        current_line = word[wrap_length:]
+            
+            if current_line:
+                lines.append(current_line)
+            
+            return "\n".join(lines)
+        
+        return s
+    
+    # Get character/object columns (strings)
+    char_cols = result_df.select_dtypes(include=['object', 'string']).columns
+    
+    # Apply formatting to each character column
+    for col in char_cols:
+        result_df[col] = result_df[col].apply(format_string)
+    
+    if inplace:
+        return None
+    else:
+        return result_df
