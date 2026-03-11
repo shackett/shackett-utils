@@ -147,7 +147,7 @@ def add_regression_results_to_anndata(
     if not inplace:
         adata = adata.copy()
 
-    _check_conflicts(set(adata.uns.keys()), {key_added}, "adata.uns")
+    _check_conflicts(adata, {key_added}, "adata.uns")
     adata.uns[key_added] = dict(results)
 
     if STATISTICAL_SUMMARIES.TIDY in results:
@@ -187,7 +187,7 @@ def _add_tidy_results(
         stats_to_add = available_stats
 
     var_df = _build_term_results(tidy_df, stats_to_add, fdr_cutoff, model_label)
-    _check_conflicts(set(adata.var.columns), set(var_df.columns), "adata.var")
+    _check_conflicts(adata, set(var_df.columns), "adata.var")
     adata.var = adata.var.join(var_df, how="left")
 
 
@@ -202,7 +202,7 @@ def _add_glance_results(
         if c not in (STATISTICS_DEFS.FEATURE_NAME, STATISTICS_DEFS.MODEL_NAME)
     ]
     new_cols = {_col_name(c, model_label) for c in stat_cols}
-    _check_conflicts(set(adata.var.columns), new_cols, "adata.var")
+    _check_conflicts(adata, new_cols, "adata.var")
 
     summary = glance_df.set_index(STATISTICS_DEFS.FEATURE_NAME)[stat_cols].rename(
         columns={c: _col_name(c, model_label) for c in stat_cols}
@@ -217,7 +217,7 @@ def _add_augment_results(
 ) -> None:
     fitted_key = _col_name("fitted", model_label)
     resid_key = _col_name("residuals", model_label)
-    _check_conflicts(set(adata.layers.keys()), {fitted_key, resid_key}, "adata.layers")
+    _check_conflicts(adata, {fitted_key, resid_key}, "adata.layers")
 
     for layer_col, layer_key in [(".fitted", fitted_key), (".resid", resid_key)]:
         aug_work = augment_df.reset_index()
@@ -291,10 +291,20 @@ def _build_term_results(
     return pd.concat(stat_dfs, axis=1).dropna(axis=1, how="all")
 
 
-def _check_conflicts(existing: set, new: set, context: str) -> None:
-    conflicts = existing & new
+def _check_conflicts(adata: AnnData, new_cols: set, context: str) -> None:
+    if context == "adata.var":
+        conflicts = {
+            col
+            for col in new_cols
+            if col in adata.var.columns and adata.var[col].notna().any()
+        }
+    elif context == "adata.layers":
+        conflicts = {key for key in new_cols if key in adata.layers}
+    else:  # adata.uns
+        conflicts = {key for key in new_cols if key in adata.uns}
+
     if conflicts:
-        raise ValueError(f"Keys already present in {context}: {conflicts}")
+        raise ValueError(f"Non-empty values already present in {context}: {conflicts}")
 
 
 def _col_name(base: str, model_label: Optional[str]) -> str:

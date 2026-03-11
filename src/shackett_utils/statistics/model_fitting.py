@@ -144,15 +144,15 @@ class StatisticalModel(ABC):
 
         if self.data is not None:
             # Formula-based fitting
-            result = self.data.copy()
-            result[".fitted"] = self.fitted_model.fittedvalues
-            result[".resid"] = self.fitted_model.resid
+            result = pd.DataFrame(index=self.data.index)
+            result["y"] = self.fitted_model.model.endog
         else:
             # Matrix-based fitting
-            result = pd.DataFrame(self._X, columns=self.term_names)
+            result = pd.DataFrame(index=range(len(self._y)))
             result["y"] = self._y
-            result[".fitted"] = self.fitted_model.fittedvalues
-            result[".resid"] = self.fitted_model.resid
+
+        result[".fitted"] = self.fitted_model.fittedvalues
+        result[".resid"] = self.fitted_model.resid
 
         # Add additional diagnostics if available
         if hasattr(self.fitted_model, "get_influence"):
@@ -161,9 +161,7 @@ class StatisticalModel(ABC):
             result[".hat"] = influence.hat_matrix_diag
             result[".cooksd"] = influence.cooks_distance[0]
 
-        result = self._add_identifiers(result)
-
-        return result
+        return self._add_identifiers(result)
 
 
 class OLSModel(StatisticalModel):
@@ -306,7 +304,6 @@ class GAMModel(StatisticalModel):
         self.family = None
 
     def augment(self) -> pd.DataFrame:
-        """Return original data with fitted values and residuals"""
         if self.fitted_model is None:
             raise ValueError("Model must be fitted first")
 
@@ -314,7 +311,8 @@ class GAMModel(StatisticalModel):
         X = self.data[x_vars].values
         y = self.data[y_var].values
 
-        result = self.data.copy()
+        result = pd.DataFrame(index=self.data.index)
+        result["y"] = y
         result[".fitted"] = self.fitted_model.predict(X)
         result[".resid"] = y - result[".fitted"]
 

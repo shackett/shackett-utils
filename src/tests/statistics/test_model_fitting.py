@@ -98,8 +98,6 @@ def test_ols_augment(test_data):
     assert len(aug_df) == len(test_data)
     assert ".fitted" in aug_df.columns
     assert ".resid" in aug_df.columns
-    # Check that original columns are preserved
-    assert all(col in aug_df.columns for col in test_data.columns)
 
 
 def test_ols_fit_xy(test_matrices):
@@ -226,8 +224,6 @@ def test_gam_augment(test_data):
     assert len(aug_df) == len(test_data)
     assert ".fitted" in aug_df.columns
     assert ".resid" in aug_df.columns
-    # Check that original columns are preserved
-    assert all(col in aug_df.columns for col in test_data.columns)
     # Residuals should equal y - fitted
     np.testing.assert_array_almost_equal(
         aug_df[".resid"].values,
@@ -348,8 +344,6 @@ def test_augment_xy_fitting(test_matrices):
     assert ".fitted" in aug_df.columns
     assert ".resid" in aug_df.columns
     assert "y" in aug_df.columns
-    assert "var1" in aug_df.columns
-    assert "var2" in aug_df.columns
 
 
 def test_residual_stats_calculation():
