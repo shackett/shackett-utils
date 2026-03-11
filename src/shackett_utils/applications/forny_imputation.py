@@ -7,7 +7,6 @@ from scipy.spatial.distance import pdist, squareform
 from scipy.cluster.hierarchy import linkage, leaves_list
 from typing import TypeVar
 
-
 T = TypeVar("T", np.ndarray, pd.Series)
 
 

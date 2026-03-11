@@ -13,13 +13,15 @@ def display_tabulator(
     caption: Optional[str] = None,
     width: Optional[str] = None,
     wrap_columns: Optional[Union[List[str], str, bool]] = None,
-    column_widths: Optional[Union[Dict[str, Union[int, str]], List[Union[int, str]]]] = None,
+    column_widths: Optional[
+        Union[Dict[str, Union[int, str]], List[Union[int, str]]]
+    ] = None,
 ) -> None:
     """
     Display a DataFrame as an interactive Tabulator table with optional text wrapping.
 
     Parameters
-    ---------- 
+    ----------
     df : pd.DataFrame
         The input data.
     layout : str, default="fitColumns"
@@ -48,18 +50,18 @@ def display_tabulator(
         - Dict: Map column names to widths (e.g., {'col1': 100, 'col2': '20%'})
         - List: Widths in column order (e.g., [100, 200, '30%'])
         - Widths can be integers (pixels) or strings (percentages/CSS units)
-        
+
     Examples
     --------
     >>> # Regular table (no wrapping)
     >>> display_tabulator(df)
-    
+
     >>> # Table with text wrapping on all columns
     >>> display_tabulator(df, wrap_columns=True)
-    
+
     >>> # Table with wrapping on specific columns
     >>> display_tabulator(df, wrap_columns=['description', 'comments'])
-    
+
     >>> # Table with wrapping on a single column
     >>> display_tabulator(df, wrap_columns='long_text_column')
     """
@@ -95,11 +97,13 @@ def display_tabulator(
 
 def export_tabulator_payload(
     df: pd.DataFrame,
-    layout: str = 'fitColumns',
+    layout: str = "fitColumns",
     include_index: bool = True,
     include_columns: bool = True,
     wrap_columns: Optional[Union[List[str], str, bool]] = None,
-    column_widths: Optional[Union[Dict[str, Union[int, str]], List[Union[int, str]]]] = None,
+    column_widths: Optional[
+        Union[Dict[str, Union[int, str]], List[Union[int, str]]]
+    ] = None,
 ) -> dict:
     """
     Convert a DataFrame into a Tabulator-compatible JSON payload.
@@ -129,7 +133,7 @@ def export_tabulator_payload(
         - Dict: Map column names to widths (e.g., {'col1': 100, 'col2': '20%'})
         - List: Widths in column order (e.g., [100, 200, '30%'])
         - Widths can be integers (pixels) or strings (percentages/CSS units)
-    
+
     Returns
     -------
     dict
@@ -143,42 +147,48 @@ def export_tabulator_payload(
 
     # --- Handle MultiIndex Columns ---
     if isinstance(df.columns, pd.MultiIndex):
-        flat_cols = ['_'.join(map(str, col)).strip() for col in df.columns.values]
+        flat_cols = ["_".join(map(str, col)).strip() for col in df.columns.values]
         table_data.columns = flat_cols
 
         grouped = {}
         for (parent, child), flat_name in zip(df.columns, flat_cols):
-            grouped.setdefault(parent, []).append({
-                "title": str(child),
-                "field": flat_name
-            })
-        column_defs = [{"title": str(parent), "columns": children} for parent, children in grouped.items()]
+            grouped.setdefault(parent, []).append(
+                {"title": str(child), "field": flat_name}
+            )
+        column_defs = [
+            {"title": str(parent), "columns": children}
+            for parent, children in grouped.items()
+        ]
     elif include_columns:
-        column_defs = [{"title": str(col), "field": str(col)} for col in table_data.columns]
+        column_defs = [
+            {"title": str(col), "field": str(col)} for col in table_data.columns
+        ]
 
     # --- Handle Index ---
     index_columns = []
     if include_index:
         if isinstance(table_data.index, pd.MultiIndex):
             table_data.index = table_data.index.map(lambda x: " / ".join(map(str, x)))
-        if table_data.index.name or not table_data.index.equals(pd.RangeIndex(len(table_data))):
+        if table_data.index.name or not table_data.index.equals(
+            pd.RangeIndex(len(table_data))
+        ):
             if table_data.index.name:
                 index_columns = [table_data.index.name]
             else:
-                index_columns = ['index']
+                index_columns = ["index"]
             table_data = table_data.reset_index()
 
     # --- Update column definitions to include index columns ---
     if include_columns and index_columns:
         if column_defs is None:
             column_defs = []
-        
+
         for col_name in index_columns:
             new_col_def = {"title": str(col_name), "field": str(col_name)}
             # Apply wrapping to index columns if requested
             if _should_wrap_column(col_name, wrap_columns, [col_name]):
-                new_col_def['formatter'] = 'textarea'
-                new_col_def['variableHeight'] = True
+                new_col_def["formatter"] = "textarea"
+                new_col_def["variableHeight"] = True
             column_defs.insert(0, new_col_def)
 
     table_records = table_data.to_dict(orient="records")
@@ -192,20 +202,19 @@ def export_tabulator_payload(
         _apply_column_widths(column_defs, column_widths, table_data.columns.tolist())
 
     # --- Options ---
-    options = {
-        "layout": layout,
-        "responsiveLayout": "collapse"
-    }
+    options = {"layout": layout, "responsiveLayout": "collapse"}
 
-    return {
-        "table": table_records,
-        "columns": column_defs,
-        "options": options
-    }
+    return {"table": table_records, "columns": column_defs, "options": options}
+
 
 # private utils
 
-def _apply_column_widths(column_defs: List[dict], column_widths: Union[Dict[str, Union[int, str]], List[Union[int, str]]], available_columns: List[str]) -> None:
+
+def _apply_column_widths(
+    column_defs: List[dict],
+    column_widths: Union[Dict[str, Union[int, str]], List[Union[int, str]]],
+    available_columns: List[str],
+) -> None:
     """Apply column width configuration to column definitions."""
     if isinstance(column_widths, dict):
         # Validate that all specified columns exist
@@ -215,17 +224,17 @@ def _apply_column_widths(column_defs: List[dict], column_widths: Union[Dict[str,
                 f"Column width specified for non-existent columns: {sorted(missing_columns)}. "
                 f"Available columns are: {sorted(available_columns)}"
             )
-        
+
         # Dictionary mapping column names to widths
         for col_def in column_defs:
             if isinstance(col_def, dict):
-                if 'field' in col_def and col_def['field'] in column_widths:
-                    col_def['width'] = column_widths[col_def['field']]
-                elif 'columns' in col_def:
+                if "field" in col_def and col_def["field"] in column_widths:
+                    col_def["width"] = column_widths[col_def["field"]]
+                elif "columns" in col_def:
                     # Handle grouped columns (MultiIndex)
-                    for sub_col in col_def['columns']:
-                        if sub_col['field'] in column_widths:
-                            sub_col['width'] = column_widths[sub_col['field']]
+                    for sub_col in col_def["columns"]:
+                        if sub_col["field"] in column_widths:
+                            sub_col["width"] = column_widths[sub_col["field"]]
     elif isinstance(column_widths, list):
         # Validate list length
         if len(column_widths) > len(available_columns):
@@ -234,25 +243,29 @@ def _apply_column_widths(column_defs: List[dict], column_widths: Union[Dict[str,
                 f"but only {len(available_columns)} columns available. "
                 f"Available columns are: {sorted(available_columns)}"
             )
-        
+
         # List of widths in column order
         col_index = 0
         for col_def in column_defs:
             if isinstance(col_def, dict):
-                if 'field' in col_def:
+                if "field" in col_def:
                     # Regular column
                     if col_index < len(column_widths):
-                        col_def['width'] = column_widths[col_index]
+                        col_def["width"] = column_widths[col_index]
                         col_index += 1
-                elif 'columns' in col_def:
+                elif "columns" in col_def:
                     # Handle grouped columns (MultiIndex)
-                    for sub_col in col_def['columns']:
+                    for sub_col in col_def["columns"]:
                         if col_index < len(column_widths):
-                            sub_col['width'] = column_widths[col_index]
+                            sub_col["width"] = column_widths[col_index]
                             col_index += 1
 
 
-def _apply_text_wrapping(column_defs: List[dict], wrap_columns: Union[List[str], str, bool], available_columns: List[str]) -> None:
+def _apply_text_wrapping(
+    column_defs: List[dict],
+    wrap_columns: Union[List[str], str, bool],
+    available_columns: List[str],
+) -> None:
     """Apply text wrapping configuration to column definitions."""
     # Validate column names if using dict-like specification
     if isinstance(wrap_columns, str):
@@ -268,23 +281,31 @@ def _apply_text_wrapping(column_defs: List[dict], wrap_columns: Union[List[str],
                 f"Text wrapping specified for non-existent columns: {sorted(missing_columns)}. "
                 f"Available columns are: {sorted(available_columns)}"
             )
-    
+
     for col_def in column_defs:
         if isinstance(col_def, dict):
-            if 'field' in col_def:
+            if "field" in col_def:
                 # Regular column
-                if _should_wrap_column(col_def['field'], wrap_columns, available_columns):
-                    col_def['formatter'] = 'textarea'
-                    col_def['variableHeight'] = True
-            elif 'columns' in col_def:
+                if _should_wrap_column(
+                    col_def["field"], wrap_columns, available_columns
+                ):
+                    col_def["formatter"] = "textarea"
+                    col_def["variableHeight"] = True
+            elif "columns" in col_def:
                 # Handle grouped columns (MultiIndex)
-                for sub_col in col_def['columns']:
-                    if _should_wrap_column(sub_col['field'], wrap_columns, available_columns):
-                        sub_col['formatter'] = 'textarea'
-                        sub_col['variableHeight'] = True
+                for sub_col in col_def["columns"]:
+                    if _should_wrap_column(
+                        sub_col["field"], wrap_columns, available_columns
+                    ):
+                        sub_col["formatter"] = "textarea"
+                        sub_col["variableHeight"] = True
 
 
-def _should_wrap_column(column_name: str, wrap_columns: Union[List[str], str, bool], available_columns: List[str]) -> bool:
+def _should_wrap_column(
+    column_name: str,
+    wrap_columns: Union[List[str], str, bool],
+    available_columns: List[str],
+) -> bool:
     """Check if a column should have text wrapping enabled."""
     if wrap_columns is True:
         return True

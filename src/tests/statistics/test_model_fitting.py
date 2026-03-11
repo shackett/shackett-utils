@@ -4,7 +4,7 @@ import numpy as np
 
 from shackett_utils.statistics import model_fitting
 from shackett_utils.statistics.model_fitting import _validate_tidy_df
-from shackett_utils.statistics.constants import STATISTICS_DEFS
+from shackett_utils.statistics.constants import STATISTICS_DEFS, TIDY_DEFS
 
 
 @pytest.fixture
@@ -143,38 +143,40 @@ def test_gam_tidy(test_data):
     tidy_df = model.tidy()
     assert isinstance(tidy_df, pd.DataFrame)
     assert len(tidy_df) == 3  # 2 predictors + intercept
-    assert "term" in tidy_df.columns
+    assert TIDY_DEFS.TERM in tidy_df.columns
     assert "type" in tidy_df.columns
-    assert "std_error" in tidy_df.columns
-    assert "statistic" in tidy_df.columns
+    assert TIDY_DEFS.STD_ERROR in tidy_df.columns
+    assert TIDY_DEFS.STATISTIC in tidy_df.columns
 
     # Check that x1 is linear and x2 is smooth
-    term_types = dict(zip(tidy_df["term"], tidy_df["type"]))
+    term_types = dict(zip(tidy_df[TIDY_DEFS.TERM], tidy_df["type"]))
     assert term_types["x1"] == "linear"
     assert term_types["x2"] == "smooth"
 
     # Check that linear terms have real statistics but smooth terms have NaN
-    x1_row = tidy_df[tidy_df["term"] == "x1"].iloc[0]
-    s_x2_row = tidy_df[tidy_df["term"] == "x2"].iloc[0]
+    x1_row = tidy_df[tidy_df[TIDY_DEFS.TERM] == "x1"].iloc[0]
+    s_x2_row = tidy_df[tidy_df[TIDY_DEFS.TERM] == "x2"].iloc[0]
 
     # Linear term should have real values for estimate, std_error, statistic
-    assert isinstance(x1_row["estimate"], float)
-    assert isinstance(x1_row["std_error"], float)
-    assert isinstance(x1_row["statistic"], float)
-    assert isinstance(x1_row["p_value"], float)
+    assert isinstance(x1_row[TIDY_DEFS.ESTIMATE], float)
+    assert isinstance(x1_row[TIDY_DEFS.STD_ERROR], float)
+    assert isinstance(x1_row[TIDY_DEFS.STATISTIC], float)
+    assert isinstance(x1_row[STATISTICS_DEFS.P_VALUE], float)
 
     # Smooth term: estimate, p_value may be real or NaN; std_error, statistic must be NaN
-    for col in ["p_value"]:
+    for col in [STATISTICS_DEFS.P_VALUE]:
         val = s_x2_row[col]
         assert np.isnan(val) or isinstance(
             val, float
         ), f"{col} for smooth term should be float or NaN, got {val}"
-    for col in ["estimate", "std_error", "statistic"]:
+    for col in [TIDY_DEFS.ESTIMATE, TIDY_DEFS.STD_ERROR, TIDY_DEFS.STATISTIC]:
         val = s_x2_row[col]
         assert np.isnan(val), f"{col} for smooth term should be NaN, got {val}"
 
     # validate that log p-values are properly calculated
-    assert np.isclose(x1_row["log10_p_value"], np.log10(x1_row["p_value"]))
+    assert np.isclose(
+        x1_row[TIDY_DEFS.LOG10_P_VALUE], np.log10(x1_row[STATISTICS_DEFS.P_VALUE])
+    )
 
 
 def test_gam_smooth_only(test_data):
@@ -196,13 +198,13 @@ def test_gam_smooth_only(test_data):
     assert all(
         row["type"] == "smooth" for _, row in tidy_df.iterrows()
     )  # all terms should be smooth
-    assert set(tidy_df["term"]) == FITTED_TERMS
+    assert set(tidy_df[TIDY_DEFS.TERM]) == FITTED_TERMS
 
     # All smooth terms: estimate, p_value may be real or NaN; std_error, statistic must be NaN
-    assert isinstance(tidy_df["p_value"].iloc[0], float)
-    assert all(np.isnan(row["estimate"]) for _, row in tidy_df.iterrows())
-    assert all(np.isnan(row["std_error"]) for _, row in tidy_df.iterrows())
-    assert all(np.isnan(row["statistic"]) for _, row in tidy_df.iterrows())
+    assert isinstance(tidy_df[STATISTICS_DEFS.P_VALUE].iloc[0], float)
+    assert all(np.isnan(row[TIDY_DEFS.ESTIMATE]) for _, row in tidy_df.iterrows())
+    assert all(np.isnan(row[TIDY_DEFS.STD_ERROR]) for _, row in tidy_df.iterrows())
+    assert all(np.isnan(row[TIDY_DEFS.STATISTIC]) for _, row in tidy_df.iterrows())
 
 
 def test_gam_glance(test_data):
@@ -214,6 +216,23 @@ def test_gam_glance(test_data):
     assert "r_squared" in glance_df.columns
     assert "nobs" in glance_df.columns
     assert glance_df["nobs"].iloc[0] == len(test_data)
+
+
+def test_gam_augment(test_data):
+    """Test GAM augment output format"""
+    model = model_fitting.fit_model("y ~ x1 + s(x2)", data=test_data, method="gam")
+    aug_df = model.augment()
+    assert isinstance(aug_df, pd.DataFrame)
+    assert len(aug_df) == len(test_data)
+    assert ".fitted" in aug_df.columns
+    assert ".resid" in aug_df.columns
+    # Check that original columns are preserved
+    assert all(col in aug_df.columns for col in test_data.columns)
+    # Residuals should equal y - fitted
+    np.testing.assert_array_almost_equal(
+        aug_df[".resid"].values,
+        test_data["y"].values - aug_df[".fitted"].values,
+    )
 
 
 def test_gam_fit_xy(test_matrices):

@@ -1,1 +1,1 @@
-""" Utility functions for my personal blog shackett.org """
+"""Utility functions for my personal blog shackett.org"""

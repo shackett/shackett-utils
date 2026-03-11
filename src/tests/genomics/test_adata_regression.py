@@ -4,6 +4,7 @@ import pandas as pd
 import anndata as ad
 from shackett_utils.genomics import adata_regression
 from shackett_utils.statistics.constants import STATISTICS_DEFS, TIDY_DEFS
+from shackett_utils.statistics.utils import get_stat_abbreviation
 
 
 @pytest.fixture
@@ -194,27 +195,26 @@ def test_add_regression_results_to_anndata(minimal_adata):
     # Check that results are stored in uns
     assert "regression_results" in adata.uns
 
-    # Check that all expected columns are present
-    expected_cols = {
-        "est_batch",
-        "est_condition",  # From TIDY_DEFS.ESTIMATE
-        "p_batch",
-        "p_condition",  # From STATISTICS_DEFS.P_VALUE
-        "q_batch",
-        "q_condition",  # From STATISTICS_DEFS.Q_VALUE
-        "log10_p_batch",
-        "log10_p_condition",  # From TIDY_DEFS.LOG10_P_VALUE
-        "stat_batch",
-        "stat_condition",  # From TIDY_DEFS.STATISTIC
-        "stderr_batch",
-        "stderr_condition",  # From TIDY_DEFS.STD_ERROR
-    }
+    # Check that all expected columns are present (derive from constants)
+    terms = ["batch", "condition"]
+    stats_with_abbrev = [
+        (TIDY_DEFS.ESTIMATE, get_stat_abbreviation(TIDY_DEFS.ESTIMATE)),
+        (STATISTICS_DEFS.P_VALUE, get_stat_abbreviation(STATISTICS_DEFS.P_VALUE)),
+        (STATISTICS_DEFS.Q_VALUE, get_stat_abbreviation(STATISTICS_DEFS.Q_VALUE)),
+        (TIDY_DEFS.LOG10_P_VALUE, get_stat_abbreviation(TIDY_DEFS.LOG10_P_VALUE)),
+        (TIDY_DEFS.STATISTIC, get_stat_abbreviation(TIDY_DEFS.STATISTIC)),
+        (TIDY_DEFS.STD_ERROR, get_stat_abbreviation(TIDY_DEFS.STD_ERROR)),
+    ]
+    expected_cols = {f"{abbrev}_{t}" for _, abbrev in stats_with_abbrev for t in terms}
     assert all(col in adata.var.columns for col in expected_cols)
 
     # Check specific values
-    assert adata.var.loc["gene_0", "est_batch"] == 0.5
-    assert adata.var.loc["gene_1", "est_condition"] == 0.4
-    assert np.isnan(adata.var.loc["gene_2", "est_batch"])  # Gene not in results
+    est_prefix = get_stat_abbreviation(TIDY_DEFS.ESTIMATE)
+    assert adata.var.loc["gene_0", f"{est_prefix}_batch"] == 0.5
+    assert adata.var.loc["gene_1", f"{est_prefix}_condition"] == 0.4
+    assert np.isnan(
+        adata.var.loc["gene_2", f"{est_prefix}_batch"]
+    )  # Gene not in results
 
     # Test with specific stats
     adata = minimal_adata.copy()
@@ -225,19 +225,13 @@ def test_add_regression_results_to_anndata(minimal_adata):
 
     # Check that only selected stats are present
     expected_cols = {
-        "est_batch",
-        "est_condition",  # From TIDY_DEFS.ESTIMATE
-        "p_batch",
-        "p_condition",  # From STATISTICS_DEFS.P_VALUE
-    }
-    unexpected_cols = {
-        "q_batch",
-        "q_condition",
-        "stat_batch",
-        "stat_condition",
-        "stderr_batch",
-        "stderr_condition",
-    }
+        f"{get_stat_abbreviation(TIDY_DEFS.ESTIMATE)}_{t}" for t in terms
+    } | {f"{get_stat_abbreviation(STATISTICS_DEFS.P_VALUE)}_{t}" for t in terms}
+    unexpected_cols = (
+        {f"{get_stat_abbreviation(STATISTICS_DEFS.Q_VALUE)}_{t}" for t in terms}
+        | {f"{get_stat_abbreviation(TIDY_DEFS.STATISTIC)}_{t}" for t in terms}
+        | {f"{get_stat_abbreviation(TIDY_DEFS.STD_ERROR)}_{t}" for t in terms}
+    )
     assert all(col in adata.var.columns for col in expected_cols)
     assert not any(col in adata.var.columns for col in unexpected_cols)
 
