@@ -1,5 +1,11 @@
 from types import SimpleNamespace
 
+STATISTICAL_SUMMARIES = SimpleNamespace(
+    TIDY="tidy",
+    GLANCE="glance",
+    AUGMENT="augment",
+)
+
 STATISTICS_DEFS = SimpleNamespace(
     FDR_METHOD="fdr_method",
     FEATURE_NAME="feature_name",
@@ -9,6 +15,11 @@ STATISTICS_DEFS = SimpleNamespace(
     P_VALUE="p_value",
     Q_VALUE="q_value",
     SIGNIFICANCE="significance",
+)
+
+REGRESSION_TYPES = SimpleNamespace(
+    OLS="ols",
+    GAM="gam",
 )
 
 TIDY_DEFS = SimpleNamespace(
@@ -86,7 +97,6 @@ HYPOTHESIS_TESTING_DEFS = SimpleNamespace(
 )
 
 HYPOTHESIS_TESTING_TYPES = []
-
 
 # FDR control
 

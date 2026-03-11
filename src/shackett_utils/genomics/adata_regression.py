@@ -12,7 +12,11 @@ from anndata import AnnData
 from shackett_utils.genomics import adata_utils
 from shackett_utils.statistics import multi_model_fitting
 from shackett_utils.statistics.utils import get_stat_abbreviation
-from shackett_utils.statistics.constants import STATISTICS_DEFS, TIDY_DEFS
+from shackett_utils.statistics.constants import (
+    STATISTICS_DEFS,
+    TIDY_DEFS,
+    STATISTICAL_SUMMARIES,
+)
 from shackett_utils.genomics.constants import REGRESSION_DEFAULT_STATS
 
 
@@ -21,6 +25,7 @@ def adata_model_fitting(
     formula: str,
     layer: Optional[str] = None,
     model_class: Optional[str] = None,
+    outputs: Optional[List[str]] = [STATISTICAL_SUMMARIES.TIDY],
     n_jobs: int = -1,
     batch_size: int = 100,
     model_name: Optional[str] = None,
@@ -44,6 +49,9 @@ def adata_model_fitting(
         to a layer in adata.layers, or a key in adata.obsm for alternative feature matrices.
     model_class : Optional[str]
         Type of model to fit ('ols', 'gam', etc.). If None, will be auto-detected from formula.
+    outputs : Optional[List[str]]
+        Which summaries to return. Any combination of 'tidy', 'glance', 'augment'.
+        Default is [STATISTICAL_SUMMARIES.TIDY].
     n_jobs : int
         Number of parallel jobs. -1 means using all processors.
     batch_size : int
@@ -62,20 +70,14 @@ def adata_model_fitting(
 
     Returns
     -------
-    pd.DataFrame
-        DataFrame with regression statistics for each feature.
-
-    Raises
-    ------
-    Exception
-        If allow_failures is False and an error occurs during model fitting
+    Dict[str, pd.DataFrame]
+        Dictionary keyed by output type containing the requested summaries.
     """
-
     feature_names, data_matrix = adata_utils.get_adata_features_and_data(
         adata, layer=layer
     )
 
-    return multi_model_fitting.fit_parallel_models_formula(
+    results = multi_model_fitting.fit_parallel_models_formula(
         X_features=data_matrix,
         data=adata.obs,
         feature_names=feature_names,
@@ -87,8 +89,10 @@ def adata_model_fitting(
         fdr_control=fdr_control,
         progress_bar=progress_bar,
         allow_failures=allow_failures,
+        outputs=outputs,
         **model_kwargs,
     )
+    return results
 
 
 def add_regression_results_to_anndata(

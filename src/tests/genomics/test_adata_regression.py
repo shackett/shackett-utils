@@ -3,7 +3,11 @@ import numpy as np
 import pandas as pd
 import anndata as ad
 from shackett_utils.genomics import adata_regression
-from shackett_utils.statistics.constants import STATISTICS_DEFS, TIDY_DEFS
+from shackett_utils.statistics.constants import (
+    STATISTICAL_SUMMARIES,
+    STATISTICS_DEFS,
+    TIDY_DEFS,
+)
 from shackett_utils.statistics.utils import get_stat_abbreviation
 
 
@@ -40,12 +44,12 @@ def test_adata_regression_integer_covariates(minimal_adata):
         n_jobs=1,
         allow_failures=False,
     )
-
-    assert isinstance(results_ols, pd.DataFrame)
-    assert len(results_ols) > 0
-    assert "feature_name" in results_ols.columns
-    assert "term" in results_ols.columns
-    assert "estimate" in results_ols.columns
+    tidy_ols = results_ols[STATISTICAL_SUMMARIES.TIDY]
+    assert isinstance(tidy_ols, pd.DataFrame)
+    assert len(tidy_ols) > 0
+    assert "feature_name" in tidy_ols.columns
+    assert "term" in tidy_ols.columns
+    assert "estimate" in tidy_ols.columns
 
     # Test GAM
     results_gam = adata_regression.adata_model_fitting(
@@ -55,11 +59,11 @@ def test_adata_regression_integer_covariates(minimal_adata):
         n_jobs=1,
         allow_failures=False,
     )
-
-    assert isinstance(results_gam, pd.DataFrame)
-    assert len(results_gam) > 0
-    assert "feature_name" in results_gam.columns
-    assert "term" in results_gam.columns
+    tidy_gam = results_gam[STATISTICAL_SUMMARIES.TIDY]
+    assert isinstance(tidy_gam, pd.DataFrame)
+    assert len(tidy_gam) > 0
+    assert "feature_name" in tidy_gam.columns
+    assert "term" in tidy_gam.columns
 
 
 def test_adata_regression_dtype_handling(minimal_adata):
@@ -113,9 +117,10 @@ def test_adata_regression_dtype_handling(minimal_adata):
                 n_jobs=1,
                 allow_failures=False,
             )
+            tidy = results[STATISTICAL_SUMMARIES.TIDY]
             print(f"Success with formula: {formula}")
-            print(f"Results shape: {results.shape}")
-            print(f"Results columns: {results.columns}")
+            print(f"Results shape: {tidy.shape}")
+            print(f"Results columns: {tidy.columns}")
         except Exception as e:
             print(f"Error with formula {formula}: {str(e)}")
             print("Data types of variables in formula:")
@@ -135,8 +140,9 @@ def test_adata_regression_model_class_inference(minimal_adata):
         n_jobs=1,
         allow_failures=False,
     )
-    assert isinstance(results_ols, pd.DataFrame)
-    assert len(results_ols) > 0
+    tidy_ols = results_ols[STATISTICAL_SUMMARIES.TIDY]
+    assert isinstance(tidy_ols, pd.DataFrame)
+    assert len(tidy_ols) > 0
 
     # Test auto-detection of GAM
     results_gam = adata_regression.adata_model_fitting(
@@ -145,8 +151,9 @@ def test_adata_regression_model_class_inference(minimal_adata):
         n_jobs=1,
         allow_failures=False,
     )
-    assert isinstance(results_gam, pd.DataFrame)
-    assert len(results_gam) > 0
+    tidy_gam = results_gam[STATISTICAL_SUMMARIES.TIDY]
+    assert isinstance(tidy_gam, pd.DataFrame)
+    assert len(tidy_gam) > 0
 
     # Test explicit model class still works
     results_explicit = adata_regression.adata_model_fitting(
@@ -156,8 +163,9 @@ def test_adata_regression_model_class_inference(minimal_adata):
         n_jobs=1,
         allow_failures=False,
     )
-    assert isinstance(results_explicit, pd.DataFrame)
-    assert len(results_explicit) > 0
+    tidy_explicit = results_explicit[STATISTICAL_SUMMARIES.TIDY]
+    assert isinstance(tidy_explicit, pd.DataFrame)
+    assert len(tidy_explicit) > 0
 
     # Test that OLS with smooth terms raises error
     with pytest.raises(ValueError, match="Cannot fit OLS model with smooth terms"):

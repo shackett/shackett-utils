@@ -1,7 +1,7 @@
 from joblib import Parallel, delayed
 import logging
 import re
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -12,12 +12,15 @@ from shackett_utils.statistics.model_fitting import (
     GAMModel,
 )
 from shackett_utils.statistics.constants import (
-    STATISTICS_DEFS,
-    MULTITEST_GROUPING_VARS,
-    FDR_METHODS_DEFS,
     FDR_METHODS,
+    FDR_METHODS_DEFS,
+    MULTITEST_GROUPING_VARS,
+    REGRESSION_TYPES,
+    STATISTICAL_SUMMARIES,
+    STATISTICS_DEFS,
     TIDY_DEFS,
 )
+from shackett_utils.statistics.utils import validate_regression_output_types
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +30,12 @@ def fit_feature_model_formula(
     data: pd.DataFrame,
     feature_name: str,
     formula: str,
-    model_class: str = "ols",
+    model_class: str = REGRESSION_TYPES.OLS,
     model_name: Optional[str] = None,
+    outputs: List[str] = [STATISTICAL_SUMMARIES.TIDY],
     allow_failures: bool = False,
     **model_kwargs,
-) -> pd.DataFrame:
+) -> Dict[str, pd.DataFrame]:
     """
     Fit a model for a single feature using formula interface.
 
@@ -49,22 +53,22 @@ def fit_feature_model_formula(
         Type of model to fit ('ols', 'gam', etc.)
     model_name : str, optional
         Name of the model for identification. Default is None.
+    outputs : list of str
+        Which summaries to return. Any combination of 'tidy', 'glance', 'augment'.
+        Default is [STATISTICAL_SUMMARIES.TIDY].
     allow_failures : bool
-        If True, handle errors gracefully and return empty DataFrame.
+        If True, handle errors gracefully and return dict of empty DataFrames.
         If False, raise exceptions for debugging. Default is False.
     **model_kwargs
         Additional arguments passed to model fitting
 
     Returns
     -------
-    pd.DataFrame
-        DataFrame with model statistics for each coefficient
-
-    Raises
-    ------
-    Exception
-        If allow_failures is False and an error occurs during model fitting
+    Dict[str, pd.DataFrame]
+        Dictionary keyed by output type containing the requested summaries.
     """
+    validate_regression_output_types(outputs)
+
     # Filter out missing values
     valid_mask = ~np.isnan(y)
     n_valid = np.sum(valid_mask)
@@ -78,30 +82,37 @@ def fit_feature_model_formula(
     # Check for zero variance
     if np.var(y) == 0:
         logger.warning(f"Skipping feature {feature_name} due to zero variance")
-        return pd.DataFrame()
+        return {key: pd.DataFrame() for key in outputs}
 
     try:
-        # Create model instance
-        if model_class.lower() == "ols":
+        if model_class.lower() == REGRESSION_TYPES.OLS:
             model = OLSModel(feature_name=feature_name, model_name=model_name)
-        elif model_class.lower() == "gam":
+        elif model_class.lower() == REGRESSION_TYPES.GAM:
             model = GAMModel(feature_name=feature_name, model_name=model_name)
         else:
             raise ValueError(f"Unsupported model class: {model_class}")
 
-        # Create temporary DataFrame with response
         model_data = data.copy()
-        # Ensure y is float64 before adding to DataFrame
         model_data["y"] = y
-
-        # Fit the model
         model.fit(formula, data=model_data, **model_kwargs)
 
-        return model.tidy()
+        result = {}
+        for key in outputs:
+            if key == STATISTICAL_SUMMARIES.TIDY:
+                result[key] = model.tidy()
+            elif key == STATISTICAL_SUMMARIES.GLANCE:
+                result[key] = model.glance()
+            elif key == STATISTICAL_SUMMARIES.AUGMENT:
+                result[key] = model.augment()
+            else:
+                raise ValueError(
+                    f"Unknown output type: '{key}'. Use 'tidy', 'glance', or 'augment'."
+                )
+        return result
 
     except Exception as e:
         if allow_failures:
-            return _handle_model_error(e, feature_name)
+            return _handle_model_error(e, feature_name, outputs)
         else:
             raise
 
@@ -169,7 +180,9 @@ def fit_feature_model_matrix(
         return model.tidy()
 
     except Exception as e:
-        return _handle_model_error(e, feature_name)
+        return _handle_model_error(
+            e, feature_name, outputs=[STATISTICAL_SUMMARIES.TIDY]
+        )[STATISTICAL_SUMMARIES.TIDY]
 
 
 def control_fdr(
@@ -371,7 +384,7 @@ def _detect_model_class_from_formula(formula: str) -> str:
     # Check if formula contains any smooth terms s()
     # Match 's(' only when it's at the start of a term or after a '+' or '~'
     has_smooth_terms = bool(re.search(r"(^|\s|~|\+)\s*s\([^)]+\)", formula))
-    model_class = "gam" if has_smooth_terms else "ols"
+    model_class = REGRESSION_TYPES.GAM if has_smooth_terms else REGRESSION_TYPES.OLS
     logger.debug(f"Detected model_class='{model_class}' for formula='{formula}'")
     return model_class
 
@@ -383,6 +396,7 @@ def fit_parallel_models_formula(
     formula: str,
     model_class: Optional[str] = None,
     model_name: Optional[str] = None,
+    outputs: List[str] = [STATISTICAL_SUMMARIES.TIDY],
     n_jobs: int = 1,
     allow_failures: bool = False,
     fdr_control: bool = True,
@@ -390,7 +404,7 @@ def fit_parallel_models_formula(
     batch_size: int = 100,
     progress_bar: bool = True,
     **model_kwargs,
-) -> pd.DataFrame:
+) -> Dict[str, pd.DataFrame]:
     """
     Fit models in parallel for multiple features using formula interface.
 
@@ -408,12 +422,15 @@ def fit_parallel_models_formula(
         Type of model to fit ('ols', 'gam', etc.). If None, will be detected from formula.
     model_name : str, optional
         Name of the model for identification
+    outputs : list of str
+        Which summaries to return. Any combination of 'tidy', 'glance', 'augment'.
+        Default is [STATISTICAL_SUMMARIES.TIDY].
     n_jobs : int
         Number of parallel jobs. Default is 1.
     allow_failures : bool
         If True, handle errors gracefully. Default is False.
     fdr_control : bool
-        Whether to perform FDR control. Default is True.
+        Whether to perform FDR control on tidy output. Default is True.
     fdr_method : str
         FDR control method. Default is 'bh'.
     batch_size : int
@@ -425,13 +442,8 @@ def fit_parallel_models_formula(
 
     Returns
     -------
-    pd.DataFrame
-        Combined DataFrame with model statistics for all features
-
-    Raises
-    ------
-    ValueError
-        If trying to fit OLS model with smooth terms in formula
+    Dict[str, pd.DataFrame]
+        Dictionary keyed by output type containing combined results for all features.
     """
     # Input validation
     if len(feature_names) != X_features.shape[1]:
@@ -442,7 +454,6 @@ def fit_parallel_models_formula(
         raise ValueError("X_features and data must have same number of samples")
 
     inferred_model_class = _detect_model_class_from_formula(formula)
-    # Auto-detect model class if not provided
     if model_class is None:
         model_class = inferred_model_class
         logger.info(
@@ -450,7 +461,10 @@ def fit_parallel_models_formula(
         )
     else:
         if model_class != inferred_model_class:
-            if model_class == "ols" and inferred_model_class == "gam":
+            if (
+                model_class == REGRESSION_TYPES.OLS
+                and inferred_model_class == REGRESSION_TYPES.GAM
+            ):
                 raise ValueError(
                     f"Cannot fit OLS model with smooth terms. Formula '{formula}' contains smooth terms "
                     f"but model_class='ols' was specified. Either:\n"
@@ -462,13 +476,9 @@ def fit_parallel_models_formula(
                 f"Using provided model class='{model_class}'"
             )
 
-    # Validate and standardize formula
     formula = _validate_formula(formula)
-
-    # Verbose setting for progress bar
     verbose = 10 if progress_bar else 0
 
-    # Run parallel processing
     logger.info(f"Starting parallel model fitting with {n_jobs} cores...")
     results_nested = Parallel(n_jobs=n_jobs, batch_size=batch_size, verbose=verbose)(
         delayed(fit_feature_model_formula)(
@@ -478,35 +488,44 @@ def fit_parallel_models_formula(
             formula=formula,
             model_class=model_class,
             model_name=model_name,
+            outputs=outputs,
             allow_failures=allow_failures,
             **model_kwargs,
         )
         for i in range(X_features.shape[1])
     )
 
-    # Filter out empty DataFrames and combine results
-    results_nested = [df for df in results_nested if not df.empty]
-    if not results_nested:
-        logger.warning(
-            "No valid model results were generated. Check your data and parameters."
-        )
-        return pd.DataFrame(
-            columns=[
-                STATISTICS_DEFS.FEATURE_NAME,
-                TIDY_DEFS.TERM,
-                TIDY_DEFS.ESTIMATE,
-                TIDY_DEFS.STD_ERROR,
-                TIDY_DEFS.P_VALUE,
-            ]
+    # Concat per output key, skipping empty DataFrames
+    empty_df = pd.DataFrame(
+        columns=[
+            STATISTICS_DEFS.FEATURE_NAME,
+            TIDY_DEFS.TERM,
+            TIDY_DEFS.ESTIMATE,
+            TIDY_DEFS.STD_ERROR,
+            TIDY_DEFS.P_VALUE,
+        ]
+    )
+    combined = {}
+    for key in outputs:
+        frames = [r[key] for r in results_nested if not r[key].empty]
+        if not frames:
+            logger.warning(f"No valid results for output '{key}'.")
+            combined[key] = empty_df
+        else:
+            combined[key] = pd.concat(frames, ignore_index=True)
+
+    # FDR control applies only to tidy output
+    if (
+        fdr_control
+        and STATISTICAL_SUMMARIES.TIDY in combined
+        and not combined[STATISTICAL_SUMMARIES.TIDY].empty
+    ):
+        combined[STATISTICAL_SUMMARIES.TIDY] = control_fdr(
+            combined[STATISTICAL_SUMMARIES.TIDY], fdr_method=fdr_method
         )
 
-    # Combine results and apply FDR control
-    results_df = pd.concat(results_nested, ignore_index=True)
-    if fdr_control:
-        results_df = control_fdr(results_df, fdr_method=fdr_method)
-
-    logger.info(f"Completed model fitting for {len(results_df)} feature-term pairs.")
-    return results_df
+    logger.info(f"Completed model fitting for {X_features.shape[1]} features.")
+    return combined
 
 
 def fit_parallel_models_matrix(
@@ -606,7 +625,9 @@ def fit_parallel_models_matrix(
     return results_df
 
 
-def _handle_model_error(e: Exception, feature_name: str) -> pd.DataFrame:
+def _handle_model_error(
+    e: Exception, feature_name: str, outputs: List[str]
+) -> Dict[str, pd.DataFrame]:
     """
     Handle model fitting errors consistently.
 
@@ -624,11 +645,10 @@ def _handle_model_error(e: Exception, feature_name: str) -> pd.DataFrame:
     """
     if isinstance(e, ValueError) and "Unsupported model class" in str(e):
         raise e
-    # Handle perfect collinearity and other numerical errors
     if any(msg in str(e).lower() for msg in ["singular", "collinear", "invertible"]):
         logger.warning(
             f"Skipping feature {feature_name} due to perfect collinearity or numerical issues"
         )
     else:
         logger.warning(f"Error in feature {feature_name}: {str(e)}")
-    return pd.DataFrame()
+    return {key: pd.DataFrame() for key in outputs}
