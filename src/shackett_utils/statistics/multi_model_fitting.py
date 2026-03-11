@@ -512,7 +512,9 @@ def fit_parallel_models_formula(
             logger.warning(f"No valid results for output '{key}'.")
             combined[key] = empty_df
         else:
-            combined[key] = pd.concat(frames, ignore_index=True)
+            # Preserve index for augment (obs identifiers) so pivot works correctly
+            ignore_index = key != STATISTICAL_SUMMARIES.AUGMENT
+            combined[key] = pd.concat(frames, ignore_index=ignore_index)
 
     # FDR control applies only to tidy output
     if (

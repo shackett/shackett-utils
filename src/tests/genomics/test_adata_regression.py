@@ -4,6 +4,7 @@ import pandas as pd
 import anndata as ad
 from shackett_utils.genomics import adata_regression
 from shackett_utils.statistics.constants import (
+    GLANCE_DEFS,
     STATISTICAL_SUMMARIES,
     STATISTICS_DEFS,
     TIDY_DEFS,
@@ -178,6 +179,37 @@ def test_adata_regression_model_class_inference(minimal_adata):
         )
 
 
+def test_add_regression_results_tidy_glance_augment(minimal_adata):
+    """Test fitting a model and adding tidy, glance, and augment summaries; validate augment."""
+    results = adata_regression.adata_model_fitting(
+        minimal_adata,
+        formula="~ batch + condition",
+        model_class="ols",
+        outputs=[
+            STATISTICAL_SUMMARIES.TIDY,
+            STATISTICAL_SUMMARIES.GLANCE,
+            STATISTICAL_SUMMARIES.AUGMENT,
+        ],
+        n_jobs=1,
+        allow_failures=False,
+    )
+    adata = minimal_adata.copy()
+    adata_regression.add_regression_results_to_anndata(
+        adata=adata, results=results, inplace=True
+    )
+    # Check tidy and glance in var
+    assert "est_batch" in adata.var.columns
+    assert "r_squared" in adata.var.columns
+    # Check augment in layers
+    assert "fitted" in adata.layers
+    assert "residuals" in adata.layers
+    # Validate: residual + fitted = X
+    X = np.asarray(adata.X)
+    fitted = np.asarray(adata.layers["fitted"])
+    residuals = np.asarray(adata.layers["residuals"])
+    np.testing.assert_array_almost_equal(X, fitted + residuals)
+
+
 def test_add_regression_results_to_anndata(minimal_adata):
     """Test adding regression results to AnnData."""
     # Create sample regression results
@@ -197,7 +229,7 @@ def test_add_regression_results_to_anndata(minimal_adata):
     # Test with default settings
     adata = minimal_adata.copy()
     adata_regression.add_regression_results_to_anndata(
-        adata=adata, results_df=results_df, inplace=True
+        adata=adata, results={STATISTICAL_SUMMARIES.TIDY: results_df}, inplace=True
     )
 
     # Check that results are stored in uns
@@ -228,7 +260,10 @@ def test_add_regression_results_to_anndata(minimal_adata):
     adata = minimal_adata.copy()
     selected_stats = [TIDY_DEFS.ESTIMATE, STATISTICS_DEFS.P_VALUE]
     adata_regression.add_regression_results_to_anndata(
-        adata=adata, results_df=results_df, stats_to_add=selected_stats, inplace=True
+        adata=adata,
+        results={STATISTICAL_SUMMARIES.TIDY: results_df},
+        stats_to_add=selected_stats,
+        inplace=True,
     )
 
     # Check that only selected stats are present
@@ -256,9 +291,9 @@ def test_add_regression_results_errors():
     empty_results = pd.DataFrame(
         columns=[STATISTICS_DEFS.FEATURE_NAME, TIDY_DEFS.TERM, TIDY_DEFS.ESTIMATE]
     )
-    with pytest.raises(ValueError, match="Results DataFrame is empty"):
+    with pytest.raises(ValueError, match="Tidy results DataFrame is empty"):
         adata_regression.add_regression_results_to_anndata(
-            adata=adata, results_df=empty_results
+            adata=adata, results={STATISTICAL_SUMMARIES.TIDY: empty_results}
         )
 
     # Test duplicate features for a term
@@ -272,7 +307,7 @@ def test_add_regression_results_errors():
     )
     with pytest.raises(ValueError, match="Found duplicate features for term 'batch'"):
         adata_regression.add_regression_results_to_anndata(
-            adata=adata, results_df=duplicate_results
+            adata=adata, results={STATISTICAL_SUMMARIES.TIDY: duplicate_results}
         )
 
     # Test invalid stats
@@ -286,7 +321,9 @@ def test_add_regression_results_errors():
     )
     with pytest.raises(ValueError, match="Invalid statistics requested"):
         adata_regression.add_regression_results_to_anndata(
-            adata=adata, results_df=valid_results, stats_to_add=["invalid_stat"]
+            adata=adata,
+            results={STATISTICAL_SUMMARIES.TIDY: valid_results},
+            stats_to_add=["invalid_stat"],
         )
 
 
@@ -311,7 +348,7 @@ def test_add_regression_results_inplace():
     # Test inplace=True
     adata_copy = adata.copy()
     result = adata_regression.add_regression_results_to_anndata(
-        adata=adata_copy, results_df=results_df, inplace=True
+        adata=adata_copy, results={STATISTICAL_SUMMARIES.TIDY: results_df}, inplace=True
     )
     assert result is None
     assert "regression_results" in adata_copy.uns
@@ -319,13 +356,64 @@ def test_add_regression_results_inplace():
 
     # Test inplace=False
     result = adata_regression.add_regression_results_to_anndata(
-        adata=adata, results_df=results_df, inplace=False
+        adata=adata, results={STATISTICAL_SUMMARIES.TIDY: results_df}, inplace=False
     )
     assert result is not None
     assert "regression_results" in result.uns
     assert "est_batch" in result.var.columns
     assert "regression_results" not in adata.uns
     assert "est_batch" not in adata.var.columns
+
+
+def test_add_regression_results_glance_only(minimal_adata):
+    """Test adding only glance results to adata.var"""
+    glance_df = pd.DataFrame(
+        {
+            STATISTICS_DEFS.FEATURE_NAME: [f"gene_{i}" for i in range(10)],
+            GLANCE_DEFS.R_SQUARED: np.random.uniform(0, 1, 10),
+            GLANCE_DEFS.AIC: np.random.randn(10) * 10 + 100,
+            GLANCE_DEFS.NOBS: [100] * 10,
+        }
+    )
+    adata = minimal_adata.copy()
+    adata_regression.add_regression_results_to_anndata(
+        adata=adata, results={STATISTICAL_SUMMARIES.GLANCE: glance_df}, inplace=True
+    )
+    assert "regression_results" in adata.uns
+    assert GLANCE_DEFS.R_SQUARED in adata.var.columns
+    assert GLANCE_DEFS.AIC in adata.var.columns
+    assert GLANCE_DEFS.NOBS in adata.var.columns
+    assert (
+        adata.var.loc["gene_0", GLANCE_DEFS.R_SQUARED]
+        == glance_df.loc[0, GLANCE_DEFS.R_SQUARED]
+    )
+
+
+def test_add_regression_results_augment_only(minimal_adata):
+    """Test adding only augment results to adata.layers"""
+    # Augment format: long with index=obs, feature_name, .fitted, .resid
+    n_obs, n_genes = minimal_adata.n_obs, minimal_adata.n_vars
+    rows = []
+    for i in range(n_obs):
+        for j in range(n_genes):
+            rows.append(
+                {
+                    STATISTICS_DEFS.FEATURE_NAME: f"gene_{j}",
+                    ".fitted": np.random.randn(),
+                    ".resid": np.random.randn() * 0.1,
+                }
+            )
+    augment_df = pd.DataFrame(rows)
+    augment_df.index = np.repeat(minimal_adata.obs_names, n_genes)
+    adata = minimal_adata.copy()
+    adata_regression.add_regression_results_to_anndata(
+        adata=adata, results={STATISTICAL_SUMMARIES.AUGMENT: augment_df}, inplace=True
+    )
+    assert "regression_results" in adata.uns
+    assert "fitted" in adata.layers
+    assert "residuals" in adata.layers
+    assert adata.layers["fitted"].shape == (n_obs, n_genes)
+    assert adata.layers["residuals"].shape == (n_obs, n_genes)
 
 
 def test_add_regression_results_significance_mask(minimal_adata):
@@ -344,7 +432,10 @@ def test_add_regression_results_significance_mask(minimal_adata):
     # Test with fdr_cutoff and q-values
     adata = minimal_adata.copy()
     adata_regression.add_regression_results_to_anndata(
-        adata=adata, results_df=results_df, fdr_cutoff=0.05, inplace=True
+        adata=adata,
+        results={STATISTICAL_SUMMARIES.TIDY: results_df},
+        fdr_cutoff=0.05,
+        inplace=True,
     )
 
     # Check significance masks are present and correct
@@ -359,7 +450,10 @@ def test_add_regression_results_significance_mask(minimal_adata):
     results_df_no_q = results_df.drop(columns=[STATISTICS_DEFS.Q_VALUE])
     adata = minimal_adata.copy()
     adata_regression.add_regression_results_to_anndata(
-        adata=adata, results_df=results_df_no_q, fdr_cutoff=0.05, inplace=True
+        adata=adata,
+        results={STATISTICAL_SUMMARIES.TIDY: results_df_no_q},
+        fdr_cutoff=0.05,
+        inplace=True,
     )
 
     # Check no significance masks are created when q-values are not available
@@ -369,7 +463,7 @@ def test_add_regression_results_significance_mask(minimal_adata):
     # Test without fdr_cutoff
     adata = minimal_adata.copy()
     adata_regression.add_regression_results_to_anndata(
-        adata=adata, results_df=results_df, inplace=True
+        adata=adata, results={STATISTICAL_SUMMARIES.TIDY: results_df}, inplace=True
     )
 
     # Check no significance masks are present when no fdr_cutoff provided
