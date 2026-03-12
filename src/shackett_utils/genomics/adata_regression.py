@@ -298,6 +298,10 @@ def _check_conflicts(adata: AnnData, new_cols: set, context: str) -> None:
             for col in new_cols
             if col in adata.var.columns and adata.var[col].notna().any()
         }
+
+        for col in conflicts:
+            print(f"\nConflicting column '{col}':")
+            print(adata.var[col].value_counts(dropna=False).head(10))
     elif context == "adata.layers":
         conflicts = {key for key in new_cols if key in adata.layers}
     else:  # adata.uns
