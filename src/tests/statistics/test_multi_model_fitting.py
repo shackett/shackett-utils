@@ -5,6 +5,7 @@ from shackett_utils.statistics.constants import (
     STATISTICAL_SUMMARIES,
     STATISTICS_DEFS,
     TIDY_DEFS,
+    FDR_METHODS_DEFS,
 )
 import pytest
 import logging
@@ -217,6 +218,7 @@ def test_fit_parallel_models_matrix(test_data):
         test_data["term_names_with_intercept"],
         n_jobs=2,
         fdr_control=True,
+        fdr_method=FDR_METHODS_DEFS.BH,
     )
 
     assert isinstance(results_df, pd.DataFrame)
@@ -248,6 +250,7 @@ def test_fit_parallel_models_formula(test_data):
         model_class="ols",
         n_jobs=2,
         fdr_control=True,
+        fdr_method=FDR_METHODS_DEFS.BH,
     )
     tidy_ols = results_df_ols[STATISTICAL_SUMMARIES.TIDY]
     assert isinstance(tidy_ols, pd.DataFrame)
@@ -272,6 +275,7 @@ def test_fit_parallel_models_formula(test_data):
         model_class="gam",
         n_jobs=2,
         fdr_control=True,
+        fdr_method=FDR_METHODS_DEFS.BH,
     )
     tidy_gam = results_df_gam[STATISTICAL_SUMMARIES.TIDY]
     assert isinstance(tidy_gam, pd.DataFrame)
@@ -335,6 +339,7 @@ def test_missing_values_formula(missing_data, caplog):
         formula="y ~ x1 + x2",
         model_class="ols",
         fdr_control=True,
+        fdr_method=FDR_METHODS_DEFS.BH,
     )
     tidy_all = results_all[STATISTICAL_SUMMARIES.TIDY]
     assert isinstance(tidy_all, pd.DataFrame)
@@ -374,6 +379,7 @@ def test_missing_values_matrix(missing_data, caplog):
         missing_data["feature_names"],
         missing_data["term_names_with_intercept"],
         fdr_control=True,
+        fdr_method=FDR_METHODS_DEFS.BH,
     )
 
     assert isinstance(results_all, pd.DataFrame)
@@ -464,6 +470,7 @@ def test_progress_bar(test_data, caplog):
         test_data["term_names_with_intercept"],
         progress_bar=True,
         fdr_control=True,
+        fdr_method=FDR_METHODS_DEFS.BH,
     )
     assert any(
         "Starting parallel model fitting" in record.message for record in caplog.records
@@ -480,6 +487,7 @@ def test_progress_bar(test_data, caplog):
         test_data["term_names_with_intercept"],
         progress_bar=False,
         fdr_control=True,
+        fdr_method=FDR_METHODS_DEFS.BH,
     )
     assert any(
         "Starting parallel model fitting" in record.message for record in caplog.records
@@ -540,6 +548,7 @@ def test_fit_parallel_models_formula_validation(test_data):
         formula="~ x1 + x2",
         model_class="ols",
         n_jobs=2,
+        fdr_method=FDR_METHODS_DEFS.BH,
     )
     tidy_rhs = results_rhs[STATISTICAL_SUMMARIES.TIDY]
     assert isinstance(tidy_rhs, pd.DataFrame)
@@ -554,6 +563,7 @@ def test_fit_parallel_models_formula_validation(test_data):
             formula="y ~ x1 ~ x2",
             model_class="ols",
             n_jobs=2,
+            fdr_method=FDR_METHODS_DEFS.BH,
         )
 
     # Test with invalid dependent variable
@@ -565,6 +575,7 @@ def test_fit_parallel_models_formula_validation(test_data):
             formula="z ~ x1 + x2",
             model_class="ols",
             n_jobs=2,
+            fdr_method=FDR_METHODS_DEFS.BH,
         )
 
 
@@ -579,6 +590,7 @@ def test_integer_predictors(integer_test_data):
         model_class="ols",
         n_jobs=1,
         allow_failures=False,
+        fdr_control=False,
     )
     tidy_ols = results_df_ols[STATISTICAL_SUMMARIES.TIDY]
     assert isinstance(tidy_ols, pd.DataFrame)
@@ -593,6 +605,7 @@ def test_integer_predictors(integer_test_data):
         model_class="gam",
         n_jobs=1,
         allow_failures=False,
+        fdr_control=False,
     )
     tidy_gam = results_df_gam[STATISTICAL_SUMMARIES.TIDY]
     assert isinstance(tidy_gam, pd.DataFrame)
@@ -699,6 +712,7 @@ def test_model_class_inference_in_parallel_fitting(test_data, caplog):
         test_data["feature_names"],
         formula="y ~ x1 + x2",
         n_jobs=1,
+        fdr_control=False,
     )
     tidy_ols = results_ols[STATISTICAL_SUMMARIES.TIDY]
     assert isinstance(tidy_ols, pd.DataFrame)
@@ -711,6 +725,7 @@ def test_model_class_inference_in_parallel_fitting(test_data, caplog):
         test_data["feature_names"],
         formula="y ~ s(x1) + x2",
         n_jobs=1,
+        fdr_control=False,
     )
     tidy_gam = results_gam[STATISTICAL_SUMMARIES.TIDY]
     assert isinstance(tidy_gam, pd.DataFrame)
@@ -725,6 +740,7 @@ def test_model_class_inference_in_parallel_fitting(test_data, caplog):
             formula="y ~ s(x1) + x2",
             model_class="ols",  # Should fail when trying to use OLS with smooth terms
             n_jobs=1,
+            fdr_control=False,
         )
 
     # Test that GAM with OLS formula works (just a warning)
@@ -736,6 +752,7 @@ def test_model_class_inference_in_parallel_fitting(test_data, caplog):
             formula="y ~ x1 + x2",  # Linear terms only
             model_class="gam",  # Override to GAM despite no smooth terms
             n_jobs=1,
+            fdr_control=False,
         )
         tidy_override = results_override[STATISTICAL_SUMMARIES.TIDY]
         assert isinstance(tidy_override, pd.DataFrame)

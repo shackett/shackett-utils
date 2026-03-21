@@ -11,10 +11,14 @@ estimate_qvalues(pvals, pi0=None, pfdr=False, **pi0_kwargs)
     Estimate q-values from p-values.
 """
 
+import logging
 import warnings
+
 import numpy as np
 from scipy.stats import norm, gaussian_kde
 from scipy.interpolate import splrep, splev
+
+logger = logging.getLogger(__name__)
 
 
 def estimate_lfdr(

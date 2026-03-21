@@ -75,22 +75,30 @@ def display_tabulator(
     )
 
     if caption:
-        display(HTML(f"""
+        display(
+            HTML(
+                f"""
         <figcaption style='font-weight:bold; margin-bottom:0.5em'>
             {caption}
         </figcaption>
-        """))
+        """
+            )
+        )
 
     # Control width through CSS on the container div
     container_style = f"width: {width}; display: inline-block;" if width else ""
 
-    display(HTML(f"""
+    display(
+        HTML(
+            f"""
     <div class="data-table" style="{container_style}"
         data-table='{json.dumps(payload["table"])}'
         data-columns='{json.dumps(payload["columns"] or [])}'
         data-options='{json.dumps(payload["options"])}'>
     </div>
-    """))
+    """
+        )
+    )
 
     return None
 

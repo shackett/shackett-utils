@@ -14,6 +14,7 @@ STATISTICS_DEFS = SimpleNamespace(
     TERM="term",
     P_VALUE="p_value",
     Q_VALUE="q_value",
+    LFDR="lfdr",
     SIGNIFICANCE="significance",
 )
 
@@ -105,8 +106,9 @@ MULTITEST_GROUPING_VARS = [
     STATISTICS_DEFS.MODEL_NAME,
 ]
 
-FDR_METHODS_DEFS = SimpleNamespace(BH="fdr_bh")
+FDR_METHODS_DEFS = SimpleNamespace(
+    BH="fdr_bh",
+    QVALUE="qvalue",
+)
 
-FDR_METHODS = [
-    FDR_METHODS_DEFS.BH,
-]
+FDR_METHODS = FDR_METHODS_DEFS.__dict__.values()
