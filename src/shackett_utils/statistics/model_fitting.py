@@ -144,15 +144,15 @@ class StatisticalModel(ABC):
 
         if self.data is not None:
             # Formula-based fitting
-            result = self.data.copy()
-            result[".fitted"] = self.fitted_model.fittedvalues
-            result[".resid"] = self.fitted_model.resid
+            result = pd.DataFrame(index=self.data.index)
+            result["y"] = self.fitted_model.model.endog
         else:
             # Matrix-based fitting
-            result = pd.DataFrame(self._X, columns=self.term_names)
+            result = pd.DataFrame(index=range(len(self._y)))
             result["y"] = self._y
-            result[".fitted"] = self.fitted_model.fittedvalues
-            result[".resid"] = self.fitted_model.resid
+
+        result[".fitted"] = self.fitted_model.fittedvalues
+        result[".resid"] = self.fitted_model.resid
 
         # Add additional diagnostics if available
         if hasattr(self.fitted_model, "get_influence"):
@@ -161,9 +161,7 @@ class StatisticalModel(ABC):
             result[".hat"] = influence.hat_matrix_diag
             result[".cooksd"] = influence.cooks_distance[0]
 
-        result = self._add_identifiers(result)
-
-        return result
+        return self._add_identifiers(result)
 
 
 class OLSModel(StatisticalModel):
@@ -305,77 +303,20 @@ class GAMModel(StatisticalModel):
         self.smooth_terms = []
         self.family = None
 
-    def _parse_formula(self, formula: str) -> tuple:
-        """Parse formula string to extract dependent and independent variables
+    def augment(self) -> pd.DataFrame:
+        if self.fitted_model is None:
+            raise ValueError("Model must be fitted first")
 
-        Parameters
-        ----------
-        formula : str
-            Model formula (e.g. 'y ~ x1 + x2' or 'response ~ x1 + s(x2)')
-            Must include explicit dependent variable.
+        y_var, x_vars, _, _ = self._parse_formula(self.formula)
+        X = self.data[x_vars].values
+        y = self.data[y_var].values
 
-        Returns
-        -------
-        tuple
-            (y_var, x_vars, smooth_terms)
-            - y_var: name of response variable from formula
-            - x_vars: list of predictor variable names
-            - smooth_terms: list of variables that should be smoothed
-            - fit_intercept: boolean indicating whether to fit an intercept term
-        """
-        parts = formula.split("~")
-        if len(parts) != 2:
-            raise ValueError("Formula must be in format 'y ~ x1 + x2 + ...'")
+        result = pd.DataFrame(index=self.data.index)
+        result["y"] = y
+        result[".fitted"] = self.fitted_model.predict(X)
+        result[".resid"] = y - result[".fitted"]
 
-        # Get response variable
-        y_var = parts[0].strip()
-        if not y_var:
-            raise ValueError("Formula must include explicit dependent variable")
-
-        # Parse predictor terms
-        x_part = parts[1].strip()
-        raw_terms = [term.strip() for term in x_part.split("+")]
-
-        # look for an explicit intercept/non-intercept terms
-        if "0" in raw_terms:
-            fit_intercept = False
-            raw_terms = [term for term in raw_terms if term != "0"]
-        else:
-            fit_intercept = True
-            if "1" in raw_terms:
-                raw_terms = [term for term in raw_terms if term != "1"]
-
-        x_vars = []
-        smooth_terms = []
-
-        for term in raw_terms:
-            # Check if it's a smooth term like s(variable_name)
-            if term.startswith("s(") and term.endswith(")"):
-                # Extract variable name from s(variable_name)
-                var_name = term[2:-1].strip()
-                x_vars.append(var_name)
-                smooth_terms.append(var_name)
-            else:
-                # Regular linear term
-                x_vars.append(term)
-
-        logger.debug(
-            f"Parsed formula '{formula}': response='{y_var}', predictors={x_vars}, smooth_terms={smooth_terms}, fit_intercept={fit_intercept}"
-        )
-        return y_var, x_vars, smooth_terms, fit_intercept
-
-    def _build_gam_terms(self, x_vars: list, smooth_terms: list) -> list:
-        """Build GAM terms list for model fitting"""
-
-        terms = []
-        for i, var in enumerate(x_vars):
-            if var in smooth_terms:
-                logger.debug(f"Adding smooth term s({i}) for variable '{var}'")
-                terms.append(s(i))
-            else:
-                logger.debug(f"Adding linear term l({i}) for variable '{var}'")
-                terms.append(l(i))
-        return TermList(*terms)
+        return self._add_identifiers(result)
 
     def fit(
         self, formula: str, data: pd.DataFrame, family: str = "gaussian", **kwargs
@@ -482,76 +423,6 @@ class GAMModel(StatisticalModel):
             "'y ~ x1 + s(x2)' where s() indicates smooth terms."
         )
 
-    def tidy(self) -> pd.DataFrame:
-        """Return coefficient/term information for GAM"""
-        if self.fitted_model is None:
-            raise ValueError("Model must be fitted first")
-
-        model = self.fitted_model
-        terms_info = []
-
-        # For each feature, get information
-        for i, _ in enumerate(model.terms):
-
-            idx = model.terms.get_coef_indices(i)
-
-            # always defined
-
-            term_names = self.term_names
-            if i == (len(term_names)):
-                term_name = "intercept"
-                is_smooth = False
-            else:
-                term_name = term_names[i]
-                is_smooth = term_name in self.smooth_terms
-
-            if is_smooth:
-                type = "smooth"
-                # sum coef-level dofs
-                edf = np.round(model.statistics_["edof_per_coef"][idx].sum(), 1)
-                estimate = np.nan
-                se = np.nan
-                statistic = np.nan
-                log10_p_value = np.nan
-
-            else:
-                type = "linear"
-                edf = 1.0
-                estimate = model.coef_[idx[0]]
-                se = model.statistics_["se"][idx[0]]
-
-                residual_df = model.statistics_["n_samples"] - model.statistics_["edof"]
-                # did some spot checking and it looks like the p-values
-                # were calculated against a t-distribution
-                statistic = estimate / se
-
-                log10_p_value = hypothesis_testing.calculate_log_tstat_pvalue(
-                    statistic,
-                    residual_df,
-                    log_base=10,
-                    test_type=HYPOTHESIS_TESTING_DEFS.TWO_TAILED,
-                )
-
-            terms_info.append(
-                {
-                    TIDY_DEFS.TERM: term_name,
-                    "type": type,
-                    TIDY_DEFS.ESTIMATE: estimate,
-                    "edf": edf,  # Linear terms have 1 degree of freedom
-                    TIDY_DEFS.STATISTIC: statistic,
-                    TIDY_DEFS.STD_ERROR: se,
-                    STATISTICS_DEFS.P_VALUE: model.statistics_["p_values"][i],
-                    TIDY_DEFS.LOG10_P_VALUE: log10_p_value,
-                }
-            )
-
-        tidy_df = pd.DataFrame(terms_info)
-
-        # Add feature name if present
-        tidy_df = self._add_identifiers(tidy_df)
-
-        return tidy_df
-
     def glance(self) -> pd.DataFrame:
         """Return model-level statistics for GAM"""
         if self.fitted_model is None:
@@ -629,6 +500,148 @@ class GAMModel(StatisticalModel):
             glance_df = self._add_identifiers(glance_df)
 
         return glance_df
+
+    def tidy(self) -> pd.DataFrame:
+        """Return coefficient/term information for GAM"""
+        if self.fitted_model is None:
+            raise ValueError("Model must be fitted first")
+
+        model = self.fitted_model
+        terms_info = []
+
+        # For each feature, get information
+        for i, _ in enumerate(model.terms):
+
+            idx = model.terms.get_coef_indices(i)
+
+            # always defined
+
+            term_names = self.term_names
+            if i == (len(term_names)):
+                term_name = "intercept"
+                is_smooth = False
+            else:
+                term_name = term_names[i]
+                is_smooth = term_name in self.smooth_terms
+
+            if is_smooth:
+                type = "smooth"
+                # sum coef-level dofs
+                edf = np.round(model.statistics_["edof_per_coef"][idx].sum(), 1)
+                estimate = np.nan
+                se = np.nan
+                statistic = np.nan
+                log10_p_value = np.nan
+
+            else:
+                type = "linear"
+                edf = 1.0
+                estimate = model.coef_[idx[0]]
+                se = model.statistics_["se"][idx[0]]
+
+                residual_df = model.statistics_["n_samples"] - model.statistics_["edof"]
+                # did some spot checking and it looks like the p-values
+                # were calculated against a t-distribution
+                statistic = estimate / se
+
+                log10_p_value = hypothesis_testing.calculate_log_tstat_pvalue(
+                    statistic,
+                    residual_df,
+                    log_base=10,
+                    test_type=HYPOTHESIS_TESTING_DEFS.TWO_TAILED,
+                )
+
+            terms_info.append(
+                {
+                    TIDY_DEFS.TERM: term_name,
+                    "type": type,
+                    TIDY_DEFS.ESTIMATE: estimate,
+                    "edf": edf,  # Linear terms have 1 degree of freedom
+                    TIDY_DEFS.STATISTIC: statistic,
+                    TIDY_DEFS.STD_ERROR: se,
+                    STATISTICS_DEFS.P_VALUE: model.statistics_["p_values"][i],
+                    TIDY_DEFS.LOG10_P_VALUE: log10_p_value,
+                }
+            )
+
+        tidy_df = pd.DataFrame(terms_info)
+
+        # Add feature name if present
+        tidy_df = self._add_identifiers(tidy_df)
+
+        return tidy_df
+
+    def _parse_formula(self, formula: str) -> tuple:
+        """Parse formula string to extract dependent and independent variables
+
+        Parameters
+        ----------
+        formula : str
+            Model formula (e.g. 'y ~ x1 + x2' or 'response ~ x1 + s(x2)')
+            Must include explicit dependent variable.
+
+        Returns
+        -------
+        tuple
+            (y_var, x_vars, smooth_terms)
+            - y_var: name of response variable from formula
+            - x_vars: list of predictor variable names
+            - smooth_terms: list of variables that should be smoothed
+            - fit_intercept: boolean indicating whether to fit an intercept term
+        """
+        parts = formula.split("~")
+        if len(parts) != 2:
+            raise ValueError("Formula must be in format 'y ~ x1 + x2 + ...'")
+
+        # Get response variable
+        y_var = parts[0].strip()
+        if not y_var:
+            raise ValueError("Formula must include explicit dependent variable")
+
+        # Parse predictor terms
+        x_part = parts[1].strip()
+        raw_terms = [term.strip() for term in x_part.split("+")]
+
+        # look for an explicit intercept/non-intercept terms
+        if "0" in raw_terms:
+            fit_intercept = False
+            raw_terms = [term for term in raw_terms if term != "0"]
+        else:
+            fit_intercept = True
+            if "1" in raw_terms:
+                raw_terms = [term for term in raw_terms if term != "1"]
+
+        x_vars = []
+        smooth_terms = []
+
+        for term in raw_terms:
+            # Check if it's a smooth term like s(variable_name)
+            if term.startswith("s(") and term.endswith(")"):
+                # Extract variable name from s(variable_name)
+                var_name = term[2:-1].strip()
+                x_vars.append(var_name)
+                smooth_terms.append(var_name)
+            else:
+                # Regular linear term
+                x_vars.append(term)
+
+        logger.debug(
+            f"Parsed formula '{formula}': response='{y_var}', predictors={x_vars}, smooth_terms={smooth_terms}, fit_intercept={fit_intercept}"
+        )
+        return y_var, x_vars, smooth_terms, fit_intercept
+
+    def _build_gam_terms(self, x_vars: list, smooth_terms: list) -> list:
+        """Build GAM terms list for model fitting"""
+
+        terms = []
+        for i, var in enumerate(x_vars):
+            if var in smooth_terms:
+                logger.debug(f"Adding smooth term s({i}) for variable '{var}'")
+                terms.append(s(i))
+            else:
+                logger.debug(f"Adding linear term l({i}) for variable '{var}'")
+                terms.append(l(i))
+        return TermList(*terms)
 
 
 # Model registry - simple dictionary lookup

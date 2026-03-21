@@ -22,6 +22,7 @@ from shackett_utils.genomics.mdata_utils import create_minimal_mudata
 from shackett_utils.statistics import multi_model_fitting
 from shackett_utils.statistics.constants import (
     STATISTICS_DEFS,
+    STATISTICAL_SUMMARIES,
     FDR_METHODS_DEFS,
     TIDY_DEFS,
     POSSIBLE_TIDY_VARS,
@@ -743,8 +744,11 @@ def regress_factors_with_formula(
         n_jobs=n_jobs,
         fdr_control=fdr_control,
         fdr_method=fdr_method,
+        outputs=[STATISTICAL_SUMMARIES.TIDY],
         **model_kwargs,
-    ).rename(columns={STATISTICS_DEFS.FEATURE_NAME: MOFA_DEFS.FACTOR_NAME})
+    )[STATISTICAL_SUMMARIES.TIDY].rename(
+        columns={STATISTICS_DEFS.FEATURE_NAME: MOFA_DEFS.FACTOR_NAME}
+    )
 
     return results_df
 

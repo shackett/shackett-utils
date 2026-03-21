@@ -1,5 +1,11 @@
 from types import SimpleNamespace
 
+STATISTICAL_SUMMARIES = SimpleNamespace(
+    TIDY="tidy",
+    GLANCE="glance",
+    AUGMENT="augment",
+)
+
 STATISTICS_DEFS = SimpleNamespace(
     FDR_METHOD="fdr_method",
     FEATURE_NAME="feature_name",
@@ -8,7 +14,13 @@ STATISTICS_DEFS = SimpleNamespace(
     TERM="term",
     P_VALUE="p_value",
     Q_VALUE="q_value",
+    LFDR="lfdr",
     SIGNIFICANCE="significance",
+)
+
+REGRESSION_TYPES = SimpleNamespace(
+    OLS="ols",
+    GAM="gam",
 )
 
 TIDY_DEFS = SimpleNamespace(
@@ -87,7 +99,6 @@ HYPOTHESIS_TESTING_DEFS = SimpleNamespace(
 
 HYPOTHESIS_TESTING_TYPES = []
 
-
 # FDR control
 
 MULTITEST_GROUPING_VARS = [
@@ -95,8 +106,9 @@ MULTITEST_GROUPING_VARS = [
     STATISTICS_DEFS.MODEL_NAME,
 ]
 
-FDR_METHODS_DEFS = SimpleNamespace(BH="fdr_bh")
+FDR_METHODS_DEFS = SimpleNamespace(
+    BH="fdr_bh",
+    QVALUE="qvalue",
+)
 
-FDR_METHODS = [
-    FDR_METHODS_DEFS.BH,
-]
+FDR_METHODS = FDR_METHODS_DEFS.__dict__.values()

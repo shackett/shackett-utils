@@ -2,7 +2,7 @@
 This module contains functions for regression and factor analysis.
 """
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 import logging
 
 import pandas as pd
@@ -11,8 +11,15 @@ from anndata import AnnData
 
 from shackett_utils.genomics import adata_utils
 from shackett_utils.statistics import multi_model_fitting
-from shackett_utils.statistics.utils import get_stat_abbreviation
-from shackett_utils.statistics.constants import STATISTICS_DEFS, TIDY_DEFS
+from shackett_utils.statistics.utils import (
+    get_stat_abbreviation,
+    validate_regression_output_types,
+)
+from shackett_utils.statistics.constants import (
+    STATISTICS_DEFS,
+    TIDY_DEFS,
+    STATISTICAL_SUMMARIES,
+)
 from shackett_utils.genomics.constants import REGRESSION_DEFAULT_STATS
 
 
@@ -21,6 +28,7 @@ def adata_model_fitting(
     formula: str,
     layer: Optional[str] = None,
     model_class: Optional[str] = None,
+    outputs: Optional[List[str]] = [STATISTICAL_SUMMARIES.TIDY],
     n_jobs: int = -1,
     batch_size: int = 100,
     model_name: Optional[str] = None,
@@ -28,7 +36,7 @@ def adata_model_fitting(
     fdr_control: bool = True,
     allow_failures: bool = False,
     **model_kwargs,
-) -> pd.DataFrame:
+) -> Dict[str, pd.DataFrame]:
     """
     Apply a regression model to each feature in an AnnData object and return statistics.
 
@@ -44,6 +52,9 @@ def adata_model_fitting(
         to a layer in adata.layers, or a key in adata.obsm for alternative feature matrices.
     model_class : Optional[str]
         Type of model to fit ('ols', 'gam', etc.). If None, will be auto-detected from formula.
+    outputs : Optional[List[str]]
+        Which summaries to return. Any combination of 'tidy', 'glance', 'augment'.
+        Default is [STATISTICAL_SUMMARIES.TIDY].
     n_jobs : int
         Number of parallel jobs. -1 means using all processors.
     batch_size : int
@@ -62,20 +73,16 @@ def adata_model_fitting(
 
     Returns
     -------
-    pd.DataFrame
-        DataFrame with regression statistics for each feature.
-
-    Raises
-    ------
-    Exception
-        If allow_failures is False and an error occurs during model fitting
+    Dict[str, pd.DataFrame]
+        Dictionary keyed by output type containing the requested summaries.
     """
 
+    validate_regression_output_types(outputs)
     feature_names, data_matrix = adata_utils.get_adata_features_and_data(
         adata, layer=layer
     )
 
-    return multi_model_fitting.fit_parallel_models_formula(
+    results = multi_model_fitting.fit_parallel_models_formula(
         X_features=data_matrix,
         data=adata.obs,
         feature_names=feature_names,
@@ -87,13 +94,16 @@ def adata_model_fitting(
         fdr_control=fdr_control,
         progress_bar=progress_bar,
         allow_failures=allow_failures,
+        outputs=outputs,
         **model_kwargs,
     )
+    return results
 
 
 def add_regression_results_to_anndata(
     adata: AnnData,
-    results_df: pd.DataFrame,
+    results: Dict[str, pd.DataFrame],
+    model_label: Optional[str] = None,
     stats_to_add: Optional[List[str]] = None,
     key_added: str = "regression_results",
     fdr_cutoff: Optional[float] = None,
@@ -106,8 +116,10 @@ def add_regression_results_to_anndata(
     ----------
     adata : AnnData
         AnnData object to add results to
-    results_df : pd.DataFrame
-        DataFrame containing regression results
+    results : Dict[str, pd.DataFrame]
+        Dictionary keyed by output type containing the requested summaries.
+    model_label : Optional[str]
+        Label for the model. If provided, all summaries will be prefixed by this key. If missing, no prefix is used.
     stats_to_add : Optional[List[str]]
         List of statistics to add to the AnnData object.
         If None, uses REGRESSION_DEFAULT_STATS
@@ -132,76 +144,108 @@ def add_regression_results_to_anndata(
         If a feature has multiple values for the same term
         If invalid statistics are requested
     """
-    # Work on a copy if not inplace
     if not inplace:
         adata = adata.copy()
 
-    # Make a copy to avoid modifying the original results
-    results = results_df.copy()
+    _check_conflicts(adata, {key_added}, "adata.uns")
+    adata.uns[key_added] = dict(results)
 
-    # Determine which statistics are available in the results
-    available_stats = [
-        stat for stat in REGRESSION_DEFAULT_STATS if stat in results.columns
-    ]
+    if STATISTICAL_SUMMARIES.TIDY in results:
+        _add_tidy_results(
+            adata,
+            results[STATISTICAL_SUMMARIES.TIDY],
+            model_label,
+            stats_to_add,
+            fdr_cutoff,
+        )
 
-    # Validate stats_to_add
-    if stats_to_add is not None:
-        invalid_stats = set(stats_to_add) - set(REGRESSION_DEFAULT_STATS)
-        if invalid_stats:
-            raise ValueError(
-                f"Invalid statistics requested: {invalid_stats}. "
-                f"Available statistics are: {REGRESSION_DEFAULT_STATS}"
-            )
-        # Filter stats_to_add to only include available statistics
-        stats_to_add = [stat for stat in stats_to_add if stat in available_stats]
-    else:
-        # If None, use all available statistics
-        stats_to_add = available_stats
+    if STATISTICAL_SUMMARIES.GLANCE in results:
+        _add_glance_results(adata, results[STATISTICAL_SUMMARIES.GLANCE], model_label)
 
-    # Store in adata.uns (serialization-friendly: only DataFrame, not nested dict)
-    adata.uns[key_added] = results
-
-    # Build term-specific results
-    all_results = _build_term_results(results, stats_to_add, fdr_cutoff)
-
-    # Join results with adata.var
-    adata.var = adata.var.join(all_results, how="left")
+    if STATISTICAL_SUMMARIES.AUGMENT in results:
+        _add_augment_results(adata, results[STATISTICAL_SUMMARIES.AUGMENT], model_label)
 
     return None if inplace else adata
 
 
+def _add_tidy_results(
+    adata: AnnData,
+    tidy_df: pd.DataFrame,
+    model_label: Optional[str],
+    stats_to_add: Optional[List[str]],
+    fdr_cutoff: Optional[float],
+) -> None:
+    available_stats = [s for s in REGRESSION_DEFAULT_STATS if s in tidy_df.columns]
+    if stats_to_add is not None:
+        invalid = set(stats_to_add) - set(REGRESSION_DEFAULT_STATS)
+        if invalid:
+            raise ValueError(
+                f"Invalid statistics requested: {invalid}. Available: {REGRESSION_DEFAULT_STATS}"
+            )
+        stats_to_add = [s for s in stats_to_add if s in available_stats]
+    else:
+        stats_to_add = available_stats
+
+    var_df = _build_term_results(tidy_df, stats_to_add, fdr_cutoff, model_label)
+    _check_conflicts(adata, set(var_df.columns), "adata.var")
+    adata.var = adata.var.join(var_df, how="left")
+
+
+def _add_glance_results(
+    adata: AnnData,
+    glance_df: pd.DataFrame,
+    model_label: Optional[str],
+) -> None:
+    stat_cols = [
+        c
+        for c in glance_df.columns
+        if c not in (STATISTICS_DEFS.FEATURE_NAME, STATISTICS_DEFS.MODEL_NAME)
+    ]
+    new_cols = {_col_name(c, model_label) for c in stat_cols}
+    _check_conflicts(adata, new_cols, "adata.var")
+
+    summary = glance_df.set_index(STATISTICS_DEFS.FEATURE_NAME)[stat_cols].rename(
+        columns={c: _col_name(c, model_label) for c in stat_cols}
+    )
+    adata.var = adata.var.join(summary, how="left")
+
+
+def _add_augment_results(
+    adata: AnnData,
+    augment_df: pd.DataFrame,
+    model_label: Optional[str],
+) -> None:
+    fitted_key = _col_name("fitted", model_label)
+    resid_key = _col_name("residuals", model_label)
+    _check_conflicts(adata, {fitted_key, resid_key}, "adata.layers")
+
+    for layer_col, layer_key in [(".fitted", fitted_key), (".resid", resid_key)]:
+        aug_work = augment_df.reset_index()
+        obs_col = aug_work.columns[0]
+        pivoted = aug_work.pivot(
+            index=obs_col,
+            columns=STATISTICS_DEFS.FEATURE_NAME,
+            values=layer_col,
+        )
+        missing_obs = set(adata.obs_names) - set(pivoted.index)
+        missing_var = set(adata.var_names) - set(pivoted.columns)
+        if missing_obs or missing_var:
+            raise ValueError(
+                f"Augment results do not align with adata for layer '{layer_key}'. "
+                f"Missing obs: {missing_obs or 'none'}. Missing vars: {missing_var or 'none'}."
+            )
+        adata.layers[layer_key] = pivoted.loc[adata.obs_names, adata.var_names].values
+
+
 def _build_term_results(
-    results: pd.DataFrame, stats_to_add: List[str], fdr_cutoff: Optional[float] = None
+    results: pd.DataFrame,
+    stats_to_add: List[str],
+    fdr_cutoff: Optional[float],
+    model_label: Optional[str],
 ) -> pd.DataFrame:
-    """
-    Build a DataFrame of term-specific results from regression output.
-
-    Parameters
-    ----------
-    results : pd.DataFrame
-        DataFrame with regression results.
-        Must contain TIDY_DEFS.TERM and STATISTICS_DEFS.FEATURE_NAME columns.
-    stats_to_add : List[str]
-        List of statistics to include in the output.
-    fdr_cutoff : Optional[float]
-        If provided, adds significance mask columns using this cutoff
-        on q-values. If q-values are not present, a warning is logged.
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame with features as index and term-specific columns.
-
-    Raises
-    ------
-    ValueError
-        If results DataFrame is empty
-        If a feature has multiple values for the same term
-    """
     if results.empty:
-        raise ValueError("Results DataFrame is empty")
+        raise ValueError("Tidy results DataFrame is empty")
 
-    # Check for duplicate features within terms
     for term in results[TIDY_DEFS.TERM].unique():
         term_results = results[results[TIDY_DEFS.TERM] == term]
         if len(term_results[STATISTICS_DEFS.FEATURE_NAME].unique()) != len(
@@ -212,7 +256,6 @@ def _build_term_results(
                 "Each feature should have exactly one value per term."
             )
 
-    # Create significance mask if cutoff provided and q-values are present
     if fdr_cutoff is not None:
         if STATISTICS_DEFS.Q_VALUE in results.columns:
             results = results.copy()
@@ -220,38 +263,53 @@ def _build_term_results(
             stats_to_add = list(stats_to_add) + ["significance"]
         else:
             logging.warning(
-                "FDR cutoff was provided but no q-values found in results. "
-                "Significance mask will not be created."
+                "FDR cutoff provided but no q-values found. Significance mask will not be created."
             )
 
-    # Initialize list to store DataFrames for each statistic
     stat_dfs = []
-
-    # Process each statistic
     for stat in stats_to_add:
-        if stat in results.columns:
-
-            # Get prefix for column names
-            stat_prefix = get_stat_abbreviation(stat)
-
-            # Pivot the data for this statistic
-            stat_df = results.pivot(
-                index=STATISTICS_DEFS.FEATURE_NAME, columns=TIDY_DEFS.TERM, values=stat
+        if stat not in results.columns:
+            continue
+        stat_prefix = get_stat_abbreviation(stat)
+        stat_df = results.pivot(
+            index=STATISTICS_DEFS.FEATURE_NAME,
+            columns=TIDY_DEFS.TERM,
+            values=stat,
+        )
+        stat_df.columns = [
+            _col_name(
+                f"{stat_prefix}_{col.replace(' ', '_').replace('-', '_')}", model_label
             )
+            for col in stat_df.columns
+        ]
+        stat_dfs.append(stat_df)
 
-            # Rename columns to include statistic prefix
-            stat_df.columns = [
-                f"{stat_prefix}_{col.replace(' ', '_').replace('-', '_')}"
-                for col in stat_df.columns
-            ]
-
-            stat_dfs.append(stat_df)
-
-    # Combine all statistics
     if not stat_dfs:
         logging.warning("No statistics to add")
         return pd.DataFrame()
 
-    # Concatenate and drop columns that are all NaN
-    result = pd.concat(stat_dfs, axis=1).dropna(axis=1, how="all")
-    return result
+    return pd.concat(stat_dfs, axis=1).dropna(axis=1, how="all")
+
+
+def _check_conflicts(adata: AnnData, new_cols: set, context: str) -> None:
+    if context == "adata.var":
+        conflicts = {
+            col
+            for col in new_cols
+            if col in adata.var.columns and adata.var[col].notna().any()
+        }
+
+        for col in conflicts:
+            print(f"\nConflicting column '{col}':")
+            print(adata.var[col].value_counts(dropna=False).head(10))
+    elif context == "adata.layers":
+        conflicts = {key for key in new_cols if key in adata.layers}
+    else:  # adata.uns
+        conflicts = {key for key in new_cols if key in adata.uns}
+
+    if conflicts:
+        raise ValueError(f"Non-empty values already present in {context}: {conflicts}")
+
+
+def _col_name(base: str, model_label: Optional[str]) -> str:
+    return f"{model_label}_{base}" if model_label else base
