@@ -166,6 +166,12 @@ def estimate_pi0(
       large omics datasets.
     - **Return type**: R returns a list with pi0, pi0.lambda, lambda,
       and pi0.smooth. This function returns only the scalar pi0.
+    - **Tail padding**: If ``max(pvals) < max(lambda_vals)`` (e.g. every
+      supplied p-value is below the default lambda grid, as with all-strong
+      results plus an inert high-``p`` leg like an intercept), append a
+      single ``p=1.0`` for the internal histogram and spline only; the scalar
+      return is unchanged, and ``estimate_qvalues`` still ranks the original
+      ``pvals`` (no extra row in the q-value pass).
     """
     pvals = np.asarray(pvals, dtype=float)
 
@@ -183,20 +189,19 @@ def estimate_pi0(
         raise ValueError("lambda values must be in [0, 1)")
     if ll > 1 and ll < 4:
         raise ValueError(f"Need at least 4 lambda values; got {ll}.")
-    if np.max(pvals) < np.max(lambda_vals):
-        raise ValueError(
-            "Maximum p-value is smaller than max(lambda). "
-            "Reduce lambda range or check your p-values."
-        )
+
+    p_work = pvals
+    if float(np.max(pvals)) < float(np.max(lambda_vals)):
+        p_work = np.append(pvals, 1.0)
 
     if ll == 1:
         return min(
-            float(np.mean(pvals >= lambda_vals[0]) / (1.0 - lambda_vals[0])),
+            float(np.mean(p_work >= lambda_vals[0]) / (1.0 - lambda_vals[0])),
             1.0,
         )
 
-    m = len(pvals)
-    counts = np.array([np.sum(pvals >= lam) for lam in lambda_vals])
+    m = len(p_work)
+    counts = np.array([np.sum(p_work >= lam) for lam in lambda_vals])
     pi0_lambda = counts / (m * (1.0 - lambda_vals))
 
     tck = splrep(lambda_vals, pi0_lambda, k=3, s=smooth_df)
