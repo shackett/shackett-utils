@@ -21,7 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-    "pandas"
+    "pandas<3.0"
 ]
 
 [project.optional-dependencies]
@@ -29,7 +29,7 @@ test = ["pytest>=7.0", "pytest-cov"]
 blog = ["IPython"]
 data = ["numpy<2.0"]
 genomics = ["anndata", "mudata", "muon", "scanpy"]
-statistics = ["scipy<1.13", "statsmodels", "pygam>=0.8.0"]
+statistics = ["scipy<1.17", "statsmodels", "pygam>=0.8.0"]
 viz = ["matplotlib", "seaborn"]
 all = [
     # test dependencies
@@ -43,7 +43,7 @@ all = [
     "muon",
     "scanpy<1.11",
     # statistics dependencies
-    "scipy<1.13",
+    "scipy<1.17",
     "statsmodels",
     "pygam>=0.9.0",
     # visualization dependencies
