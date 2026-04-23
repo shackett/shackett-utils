@@ -88,6 +88,13 @@ def test_pi0_rejects_out_of_range():
         estimate_pi0(np.array([0.1, 0.5, 1.5]))
 
 
+def test_pi0_all_tiny_p_appends_synthetic_for_grid():
+    """When every p is below the default lambda grid, pi0 still runs (tail pad)."""
+    p_tiny = np.array([1e-20, 1e-22, 3e-19])
+    pi0 = estimate_pi0(p_tiny)
+    assert 0 < pi0 <= 1.0
+
+
 def test_lfdr_correlation_with_r(pvals, pi0_r, lfdr_r):
     """
     Correlation is tight at 0.9998 on reference data. Threshold of
