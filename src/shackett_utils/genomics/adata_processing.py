@@ -3,6 +3,7 @@ This module contains functions for data normalization and transformation.
 """
 
 from copy import deepcopy
+from types import SimpleNamespace
 from typing import Tuple, List, Dict, Union, Optional
 import warnings
 
@@ -11,6 +12,12 @@ import scipy.sparse as sp
 from anndata import AnnData
 
 import matplotlib.pyplot as plt
+
+
+CENTERING_DEFS = SimpleNamespace(
+    DEFAULT_NAME_TEMPLATE="{layer}_centered",
+    DEFAULT_NAME_NOLAYER="centered",
+)
 
 
 def plot_feature_counts_histogram(
@@ -431,16 +438,19 @@ def center_rows_and_columns(
         )
 
     # Store the result
-    if layer is None:
+    if copy_layer:
+        # Determine new layer name
+        if new_layer_name is None:
+            new_layer_name = (
+                CENTERING_DEFS.DEFAULT_NAME_TEMPLATE.format(layer=layer)
+                if layer
+                else CENTERING_DEFS.DEFAULT_NAME_NOLAYER
+            )
+        adata.layers[new_layer_name] = matrix
+    elif layer is None:
         adata.X = matrix
     else:
-        if copy_layer:
-            # Determine new layer name
-            if new_layer_name is None:
-                new_layer_name = f"{layer}_centered" if layer else "centered"
-            adata.layers[new_layer_name] = matrix
-        else:
-            adata.layers[layer] = matrix
+        adata.layers[layer] = matrix
 
     if not inplace:
         return adata
