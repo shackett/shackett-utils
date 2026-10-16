@@ -1,5 +1,7 @@
 """Tests for the qvalue module."""
 
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -62,12 +64,12 @@ def qvalue_r(r_results):
 
 def test_pi0_close_to_r(pvals, pi0_r):
     """
-    Tolerance of 0.05 reflects the known difference between scipy's
-    splrep (residual penalty) and R's smooth.spline (GCV-based effective
-    df). The spline smoothing step is the sole source of divergence here.
+    The smoother now solves for the spline penalty whose effective df
+    equals R's smooth.spline(df=3), so pi0 matches R to floating-point
+    noise (observed ~2e-5). Tolerance of 1e-3 leaves a wide margin.
     """
     pi0_py = estimate_pi0(pvals)
-    assert abs(pi0_py - pi0_r) < 0.05, (
+    assert abs(pi0_py - pi0_r) < 1e-3, (
         f"pi0 mismatch: Python={pi0_py:.6f}, R={pi0_r:.6f}, "
         f"diff={abs(pi0_py - pi0_r):.6f}"
     )
@@ -97,34 +99,58 @@ def test_pi0_all_tiny_p_appends_synthetic_for_grid():
 
 def test_lfdr_correlation_with_r(pvals, pi0_r, lfdr_r):
     """
-    Correlation is tight at 0.9998 on reference data. Threshold of
-    0.999 gives a small margin while catching any real regression.
+    With the bw.nrd0 bandwidth (0.9 constant) now matching R, correlation
+    is 1.0 to six places on reference data. Threshold of 0.99999 catches
+    any real regression.
     """
     lfdr_py = estimate_lfdr(pvals, pi0=pi0_r)
     corr = np.corrcoef(lfdr_py, lfdr_r)[0, 1]
-    assert corr > 0.999, f"lfdr correlation too low: {corr:.6f}"
+    assert corr > 0.99999, f"lfdr correlation too low: {corr:.6f}"
 
 
 def test_lfdr_max_abs_diff_with_r(pvals, pi0_r, lfdr_r):
     """
-    Max abs diff is 0.051 on reference data; threshold of 0.06 gives
-    a small margin. Residual divergence comes from scipy's splrep vs
-    R's smooth.spline applied to the KDE grid.
+    Max abs diff is ~1e-4 on reference data now that the bandwidth matches
+    R's bw.nrd0; threshold of 1e-3 leaves a 10x margin. (Was 0.051 under
+    the bw.nrd 1.06 constant.)
     """
     lfdr_py = estimate_lfdr(pvals, pi0=pi0_r)
     max_diff = np.abs(lfdr_py - lfdr_r).max()
-    assert max_diff < 0.06, f"lfdr max abs diff {max_diff:.6f} exceeds tolerance"
+    assert max_diff < 1e-3, f"lfdr max abs diff {max_diff:.6f} exceeds tolerance"
 
 
 def test_lfdr_mean_abs_diff_with_r(pvals, pi0_r, lfdr_r):
     """
-    Mean abs diff is 0.004 on reference data — typical errors are much
-    smaller than the max. Threshold of 0.01 catches systematic bias
-    while allowing the known tail divergence.
+    Mean abs diff is ~1e-5 on reference data — far below the max.
+    Threshold of 1e-4 catches systematic bias.
     """
     lfdr_py = estimate_lfdr(pvals, pi0=pi0_r)
     mean_diff = np.abs(lfdr_py - lfdr_r).mean()
-    assert mean_diff < 0.01, f"lfdr mean abs diff {mean_diff:.6f} exceeds tolerance"
+    assert mean_diff < 1e-4, f"lfdr mean abs diff {mean_diff:.6f} exceeds tolerance"
+
+
+def test_lfdr_most_pvalues_at_clamp_does_not_crash():
+    """
+    When >75% of p-values sit at the eps clamp, the IQR of the probit
+    values is zero. bw.nrd0's zero-spread fallback must keep the
+    bandwidth positive so the KDE does not hit a singular matrix.
+    """
+    rng = np.random.default_rng(0)
+    pvals = np.concatenate([np.full(800, 1e-30), rng.uniform(size=200)])
+    lfdr_py = estimate_lfdr(pvals)
+    assert np.all(np.isfinite(lfdr_py))
+    assert np.all((lfdr_py >= 0) & (lfdr_py <= 1))
+
+
+def test_lfdr_all_pvalues_equal_does_not_crash():
+    """
+    All p-values equal collapses the probit values to a single point.
+    The density reduces to one Gaussian kernel; lfdr must stay finite
+    and in range rather than raising a singular-covariance error.
+    """
+    lfdr_py = estimate_lfdr(np.full(100, 0.5))
+    assert np.all(np.isfinite(lfdr_py))
+    assert np.all((lfdr_py >= 0) & (lfdr_py <= 1))
 
 
 def test_lfdr_in_valid_range(pvals, pi0_r):
@@ -195,3 +221,21 @@ def test_qvalues_bounded_by_pi0(pvals, pi0_r):
 def test_qvalues_rejects_nans():
     with pytest.raises(ValueError, match="NaN"):
         estimate_qvalues(np.array([0.1, np.nan, 0.5]))
+
+
+def test_pfdr_with_p_equal_one_emits_no_warning():
+    """
+    p=1 drives log1p(-p) to -inf in the pFDR denominator; with the
+    expm1/log1p evaluation inside an errstate block the result is still
+    correct (one_minus -> 1) and no RuntimeWarning escapes.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        qvals = estimate_qvalues(np.array([0.01, 0.5, 1.0]), pi0=1.0, pfdr=True)
+    assert np.all(np.isfinite(qvals))
+
+
+def test_pfdr_with_zero_pvalue_is_finite():
+    """p=0 is a 0/0 in the pFDR ratio; the p->0 limit 1/i keeps it finite."""
+    qvals = estimate_qvalues(np.array([0.0, 0.2, 0.8]), pi0=1.0, pfdr=True)
+    assert np.all(np.isfinite(qvals))

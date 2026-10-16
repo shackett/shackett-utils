@@ -16,7 +16,7 @@ import warnings
 
 import numpy as np
 from scipy.stats import norm, gaussian_kde
-from scipy.interpolate import splrep, splev
+from scipy.interpolate import splrep, splev, make_smoothing_spline
 
 logger = logging.getLogger(__name__)
 
@@ -77,15 +77,16 @@ def estimate_lfdr(
     - **Transformation**: Only probit is implemented, matching R's
       default ``transf="probit"``. The logit branch is omitted.
     - **KDE bandwidth**: R uses ``density(x, adjust=adj)`` which applies
-      ``bw.nrd0(x) * adj`` as the bandwidth. ``bw.nrd0`` and
-      ``_silverman_bw`` are equivalent formulations of Silverman's rule
-      and should give identical bandwidth values. scipy's
-      ``gaussian_kde`` expects a normalised scalar, so the absolute
-      bandwidth is divided by ``std(x)`` before passing.
+      ``bw.nrd0(x) * adj`` as the bandwidth. ``_silverman_bw`` reproduces
+      ``bw.nrd0`` exactly, including the ``0.9`` constant and the
+      zero-spread fallback. scipy's ``gaussian_kde`` expects a normalised
+      scalar, so the absolute bandwidth is divided by ``std(x)`` before
+      passing.
     - **Spline smoothing**: R applies ``smooth.spline()`` to the 512-
-      point KDE grid before evaluating at observations. scipy's
-      ``splrep(s=None)`` uses a different GCV criterion than R's
-      ``smooth.spline``, so smoothed density values will differ slightly.
+      point KDE grid before evaluating at observations. This port
+      interpolates the grid instead (``splrep(s=None)`` with no weights
+      is ``s=0``, i.e. no smoothing), which is adequate because the grid
+      is already dense and smooth; density values differ only slightly.
     """
     pvals = np.asarray(pvals, dtype=float)
 
@@ -120,7 +121,7 @@ def estimate_lfdr(
 def estimate_pi0(
     pvals: np.ndarray,
     lambda_vals: np.ndarray = np.arange(0.05, 0.95 + 1e-10, 0.05),
-    smooth_df: int = 3,
+    smooth_df: float = 3.0,
 ) -> float:
     """
     Estimate pi0, the proportion of true null hypotheses.
@@ -139,10 +140,11 @@ def estimate_pi0(
         p > lambda are assumed likely null. Default matches R qvalue:
         seq(0.05, 0.95, 0.05). Must have >= 4 values if more than 1
         is provided (required for cubic spline fitting).
-    smooth_df : int
-        Smoothing parameter passed as ``s`` to scipy's ``splrep``.
-        Analogous to R's ``smooth.df=3`` argument to ``smooth.spline``,
-        though not numerically equivalent — see Details.
+    smooth_df : float
+        Target effective degrees of freedom for the smoothing spline
+        fitted across ``lambda_vals``, matching R's ``smooth.df=3``
+        argument to ``smooth.spline``. The spline penalty is solved so
+        the smoother's effective df equals this value.
 
     Returns
     -------
@@ -158,12 +160,11 @@ def estimate_pi0(
       This function raises a ``ValueError`` instead to avoid silent
       data loss in calling code.
     - **Smoothing spline**: R uses ``smooth.spline(lambda, pi0, df=3)``,
-      which controls effective degrees of freedom via GCV. scipy's
-      ``splrep`` uses ``s`` as a raw residual penalty, not effective df.
-      ``s=smooth_df`` wires the parameter through with the correct
-      direction (lower = smoother) but will not give numerically
-      identical results to R. The difference is typically <0.5% on
-      large omics datasets.
+      which fixes the smoother's effective degrees of freedom. This port
+      reproduces that by solving for the ``make_smoothing_spline`` penalty
+      whose hat-matrix trace equals ``smooth_df`` (see
+      ``_smooth_spline_at_df``), so pi0 matches R to within floating-point
+      noise rather than the percent-level drift of a raw residual penalty.
     - **Return type**: R returns a list with pi0, pi0.lambda, lambda,
       and pi0.smooth. This function returns only the scalar pi0.
     - **Tail padding**: If ``max(pvals) < max(lambda_vals)`` (e.g. every
@@ -204,9 +205,8 @@ def estimate_pi0(
     counts = np.array([np.sum(p_work >= lam) for lam in lambda_vals])
     pi0_lambda = counts / (m * (1.0 - lambda_vals))
 
-    tck = splrep(lambda_vals, pi0_lambda, k=3, s=smooth_df)
-    pi0_smooth = splev(lambda_vals, tck)
-    pi0 = float(pi0_smooth[-1])
+    spline = _smooth_spline_at_df(lambda_vals, pi0_lambda, smooth_df)
+    pi0 = float(spline(lambda_vals[-1]))
 
     if pi0 <= 0:
         warnings.warn(f"Estimated pi0 <= 0 ({pi0:.4f}); setting to 1.", RuntimeWarning)
@@ -260,9 +260,11 @@ def estimate_qvalues(
       qvalues, lfdr, pi0, lambda, and diagnostic quantities. This
       function returns only the q-value array. Call ``estimate_lfdr()``
       directly for local FDR values.
-    - **pFDR denominator**: The pFDR branch uses
-      ``i * (1 - (1-p)^m)`` as the denominator, matching R exactly.
-      For large m this approaches ``i`` and pFDR ≈ standard q-values.
+    - **pFDR denominator**: The pFDR branch uses ``i * (1 - (1-p)^m)`` as
+      the denominator (R's form). ``1 - (1-p)^m`` is evaluated as
+      ``-expm1(m * log1p(-p))`` for numerical stability, and ``p = 0`` uses
+      the limiting ratio ``1/i`` (the naive form is NaN there). For large m
+      this approaches ``i`` and pFDR ≈ standard q-values.
     """
     pvals = np.asarray(pvals, dtype=float)
 
@@ -283,10 +285,14 @@ def estimate_qvalues(
 
     p_sorted_desc = pvals[o]
     if pfdr:
-        denom = i * (1 - (1 - p_sorted_desc) ** m)
-        qvals = (
-            pi0 * np.minimum(1, np.minimum.accumulate(p_sorted_desc * m / denom))[ro]
-        )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            # 1 - (1-p)^m via expm1/log1p, stable for tiny p where (1-p)^m
+            # rounds to 1 (denominator -> 0).
+            one_minus = -np.expm1(m * np.log1p(-p_sorted_desc))
+            ratio = p_sorted_desc * m / (i * one_minus)
+        # p = 0 is a 0/0 above; its limit as p -> 0 is 1/i.
+        ratio = np.where(p_sorted_desc == 0, 1.0 / i, ratio)
+        qvals = pi0 * np.minimum(1, np.minimum.accumulate(ratio))[ro]
     else:
         qvals = pi0 * np.minimum(1, np.minimum.accumulate(p_sorted_desc * m / i))[ro]
 
@@ -324,13 +330,17 @@ def _probit_transform(p: np.ndarray, eps: float):
 
 def _kde_then_spline(x_obs: np.ndarray, bw: float, n_grid: int = 512) -> np.ndarray:
     """
-    Estimate density at observed points via KDE on a grid followed by
-    spline smoothing, matching R's two-step approach in qvalue::lfdr().
+    Estimate density at observed points via KDE on a grid followed by a
+    cubic spline through that grid, following R's two-step approach in
+    qvalue::lfdr().
 
     R evaluates density() on a 512-point grid, fits smooth.spline() to
     that grid, then calls predict() at the original observations. This
-    avoids evaluating the KDE directly at potentially sparse observation
-    locations.
+    port interpolates the grid instead (``splrep(s=None)`` with no
+    weights is ``s=0``, no smoothing); the grid is already dense and
+    smooth, so interpolation tracks R's smoothed curve closely. Either
+    way the KDE is not evaluated directly at potentially sparse
+    observation locations.
 
     Parameters
     ----------
@@ -346,7 +356,15 @@ def _kde_then_spline(x_obs: np.ndarray, bw: float, n_grid: int = 512) -> np.ndar
     np.ndarray
         Smoothed density evaluated at each point in x_obs.
     """
-    kde = gaussian_kde(x_obs, bw_method=bw / np.std(x_obs, ddof=1))
+    std = np.std(x_obs, ddof=1)
+    if std == 0:
+        # All transformed values identical (e.g. every p-value equal).
+        # gaussian_kde cannot form a covariance here; R's density() reduces
+        # to a single Gaussian kernel of width bw, constant when evaluated
+        # at the shared location.
+        return np.full_like(x_obs, 1.0 / (bw * np.sqrt(2.0 * np.pi)))
+
+    kde = gaussian_kde(x_obs, bw_method=bw / std)
     x_grid = np.linspace(x_obs.min() - 3 * bw, x_obs.max() + 3 * bw, n_grid)
     myd_y = kde(x_grid)
 
@@ -358,6 +376,12 @@ def _silverman_bw(x: np.ndarray) -> float:
     """
     Silverman's rule of thumb bandwidth (R's bw.nrd0).
 
+    Reproduces ``bw.nrd0``: ``0.9 * lo * n^(-1/5)`` where
+    ``lo = min(sd, IQR/1.349)``. When that spread is zero — more than
+    ~75% of the values tied at a clamp, or all values equal — R falls
+    back to the first nonzero of ``sd``, ``|x[0]|``, ``1``, which keeps
+    the downstream KDE from collapsing to a zero bandwidth.
+
     Parameters
     ----------
     x : np.ndarray
@@ -366,9 +390,73 @@ def _silverman_bw(x: np.ndarray) -> float:
     Returns
     -------
     float
-        Bandwidth estimate: 1.06 * min(sd, IQR/1.34) * n^(-1/5).
+        Bandwidth estimate.
     """
     n = len(x)
-    std = np.std(x, ddof=1)
-    iqr_scaled = (np.percentile(x, 75) - np.percentile(x, 25)) / 1.34
-    return 1.06 * min(std, iqr_scaled) * n ** (-0.2)
+    sd = np.std(x, ddof=1)
+    lo = min(sd, (np.percentile(x, 75) - np.percentile(x, 25)) / 1.349)
+    if lo == 0:
+        lo = sd or abs(x[0]) or 1.0
+    return float(0.9 * lo * n ** (-0.2))
+
+
+def _smooth_spline_at_df(
+    x: np.ndarray,
+    y: np.ndarray,
+    target_df: float,
+    tol: float = 1e-3,
+    max_iter: int = 60,
+):
+    """
+    Smoothing spline whose effective degrees of freedom equal ``target_df``.
+
+    Reproduces R's ``smooth.spline(x, y, df=target_df)``. The effective df
+    of a smoothing spline is the trace of its hat matrix ``S(lam)``, which
+    decreases monotonically in the penalty ``lam`` (from ``len(x)`` as
+    ``lam -> 0`` to ``2`` as ``lam -> inf``). The penalty is found by
+    bisection in ``log(lam)`` so the trace matches ``target_df``.
+
+    Parameters
+    ----------
+    x, y : np.ndarray
+        Strictly increasing abscissa and the values to smooth.
+    target_df : float
+        Desired effective degrees of freedom (``2 <= target_df <= len(x)``).
+    tol : float
+        Absolute tolerance on the effective df.
+    max_iter : int
+        Maximum bisection iterations.
+
+    Returns
+    -------
+    Callable
+        The fitted spline, evaluable at arbitrary points.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    n = len(x)
+    basis = np.eye(n)
+
+    def effective_df(lam: float) -> float:
+        return float(
+            sum(make_smoothing_spline(x, basis[i], lam=lam)(x[i]) for i in range(n))
+        )
+
+    lam_lo, lam_hi = 1e-8, 1e6
+    if effective_df(lam_hi) >= target_df:
+        return make_smoothing_spline(x, y, lam=lam_hi)
+    if effective_df(lam_lo) <= target_df:
+        return make_smoothing_spline(x, y, lam=lam_lo)
+
+    lam = np.sqrt(lam_lo * lam_hi)
+    for _ in range(max_iter):
+        lam = np.sqrt(lam_lo * lam_hi)
+        df = effective_df(lam)
+        if abs(df - target_df) < tol:
+            break
+        if df > target_df:
+            lam_lo = lam
+        else:
+            lam_hi = lam
+
+    return make_smoothing_spline(x, y, lam=lam)
