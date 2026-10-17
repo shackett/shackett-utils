@@ -239,3 +239,35 @@ def test_pfdr_with_zero_pvalue_is_finite():
     """p=0 is a 0/0 in the pFDR ratio; the p->0 limit 1/i keeps it finite."""
     qvals = estimate_qvalues(np.array([0.0, 0.2, 0.8]), pi0=1.0, pfdr=True)
     assert np.all(np.isfinite(qvals))
+
+
+def test_pi0_rejects_fewer_than_five_lambdas():
+    with pytest.raises(ValueError, match="at least 5"):
+        estimate_pi0(np.array([0.2, 0.4, 0.6, 0.8]), lambda_vals=np.array([0.1, 0.3, 0.6, 0.9]))
+
+
+def test_pi0_accepts_five_lambdas():
+    rng = np.random.default_rng(0)
+    pi0 = estimate_pi0(rng.uniform(size=500), lambda_vals=np.array([0.1, 0.3, 0.5, 0.7, 0.9]))
+    assert 0 < pi0 <= 1.0
+
+
+@pytest.mark.parametrize("bad_pi0", [-0.1, 0.0, 1.5, np.nan, np.inf])
+def test_estimate_qvalues_rejects_invalid_pi0(bad_pi0: float) -> None:
+    with pytest.raises(ValueError, match="pi0 must be finite"):
+        estimate_qvalues(np.array([0.01, 0.5, 1.0]), pi0=bad_pi0)
+
+
+@pytest.mark.parametrize("bad_pi0", [-0.1, 0.0, 1.5, np.nan, np.inf])
+def test_estimate_lfdr_rejects_invalid_pi0(bad_pi0: float) -> None:
+    with pytest.raises(ValueError, match="pi0 must be finite"):
+        estimate_lfdr(np.array([0.01, 0.5, 0.9]), pi0=bad_pi0)
+
+
+def test_lfdr_tightly_clustered_pvalues_stay_nonnegative():
+    # The cubic spline over the KDE grid can interpolate a negative density between positive knots when
+    # the probit values are tightly clustered; the density floor keeps lfdr a valid probability.
+    pvals = np.concatenate([np.linspace(0.49999999, 0.50000001, 990), np.linspace(0.9, 0.99, 10)])
+    lfdr = estimate_lfdr(pvals, pi0=1.0, monotone=False)
+    assert np.all(np.isfinite(lfdr))
+    assert np.all(lfdr >= 0)

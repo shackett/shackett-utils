@@ -20,6 +20,9 @@ from scipy.interpolate import splrep, splev, make_smoothing_spline
 
 logger = logging.getLogger(__name__)
 
+# Density floor (relative to the grid maximum) that keeps a spline-interpolated density positive.
+_DENSITY_FLOOR = 1e-10
+
 
 def estimate_lfdr(
     pvals: np.ndarray,
@@ -99,6 +102,7 @@ def estimate_lfdr(
 
     if pi0 is None:
         pi0 = estimate_pi0(pvals, **pi0_kwargs)
+    _validate_pi0(pi0)
 
     x, jacobian = _probit_transform(pvals, eps)
 
@@ -138,8 +142,8 @@ def estimate_pi0(
     lambda_vals : np.ndarray
         Grid of tuning values in [0, 1). At each lambda, tests with
         p > lambda are assumed likely null. Default matches R qvalue:
-        seq(0.05, 0.95, 0.05). Must have >= 4 values if more than 1
-        is provided (required for cubic spline fitting).
+        seq(0.05, 0.95, 0.05). Must have >= 5 values if more than 1
+        is provided (the smoothing spline requires at least five knots).
     smooth_df : float
         Target effective degrees of freedom for the smoothing spline
         fitted across ``lambda_vals``, matching R's ``smooth.df=3``
@@ -188,8 +192,8 @@ def estimate_pi0(
 
     if np.min(lambda_vals) < 0 or np.max(lambda_vals) >= 1:
         raise ValueError("lambda values must be in [0, 1)")
-    if ll > 1 and ll < 4:
-        raise ValueError(f"Need at least 4 lambda values; got {ll}.")
+    if ll > 1 and ll < 5:
+        raise ValueError(f"Need at least 5 lambda values for the smoothing spline; got {ll}.")
 
     p_work = pvals
     if float(np.max(pvals)) < float(np.max(lambda_vals)):
@@ -277,6 +281,7 @@ def estimate_qvalues(
 
     if pi0 is None:
         pi0 = estimate_pi0(pvals, **pi0_kwargs)
+    _validate_pi0(pi0)
 
     m = len(pvals)
     i = np.arange(m, 0, -1)
@@ -297,6 +302,16 @@ def estimate_qvalues(
         qvals = pi0 * np.minimum(1, np.minimum.accumulate(p_sorted_desc * m / i))[ro]
 
     return qvals
+
+
+def _validate_pi0(pi0: float) -> None:
+    """Reject a caller-supplied pi0 that is not a finite proportion in (0, 1].
+
+    A negative or >1 pi0 yields invalid (negative or >1) q-values/lfdr, and NaN propagates silently;
+    fail loud instead. An estimated pi0 is already clamped to (0, 1], so this only catches bad inputs.
+    """
+    if not np.isfinite(pi0) or not (0.0 < pi0 <= 1.0):
+        raise ValueError(f"pi0 must be finite and in (0, 1]; got {pi0!r}")
 
 
 def _probit_transform(p: np.ndarray, eps: float):
@@ -369,7 +384,12 @@ def _kde_then_spline(x_obs: np.ndarray, bw: float, n_grid: int = 512) -> np.ndar
     myd_y = kde(x_grid)
 
     tck = splrep(x_grid, myd_y, k=3, s=None)
-    return splev(x_obs, tck)
+    # The unconstrained cubic spline can dip below zero between positive grid knots when the
+    # transformed values are tightly clustered, which would make lfdr = pi0 * jacobian / density
+    # negative (upper truncation does not repair that). Floor the density at a small positive
+    # fraction of the grid maximum so it stays a valid, finite density.
+    density = np.asarray(splev(x_obs, tck))
+    return np.maximum(density, _DENSITY_FLOOR * float(myd_y.max()))
 
 
 def _silverman_bw(x: np.ndarray) -> float:
